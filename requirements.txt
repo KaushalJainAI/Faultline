@@ -1,0 +1,16 @@
+django
+djangorestframework
+langgraph
+langchain
+langchain-openai
+httpx
+psutil
+watchdog
+ruff
+faiss-cpu
+numpy
+transformers
+torch
+python-dotenv
+pytest
+mcp
