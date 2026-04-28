@@ -51,13 +51,11 @@ class LogCorrelator:
             event_handler = LogFileHandler(self.log_path, self._process_log_line)
             self._handler = event_handler
             # Watchdog expects a directory, so we watch the directory containing the log
-            log_dir = "/".join(self.log_path.replace("\\", "/").split("/")[:-1])
-            if not log_dir:
-                log_dir = "."
+            log_dir = str(Path(self.log_path).resolve().parent)
                 
             self.observer.schedule(event_handler, log_dir, recursive=False)
             self.observer.start()
-            logger.info(f"Started watching log file: {self.log_path}")
+            logger.info(f"Started watching log file: {self.log_path} in {log_dir}")
         except FileNotFoundError:
             logger.error(f"Log file not found: {self.log_path}. Creating it.")
             open(self.log_path, 'w').close()
@@ -76,12 +74,4 @@ class LogCorrelator:
         return self.crashes
 
 if __name__ == "__main__":
-    # Example usage:
-    # correlator = LogCorrelator("server.log")
-    # correlator.start_watching()
-    # try:
-    #     while True:
-    #         time.sleep(1)
-    # except KeyboardInterrupt:
-    #     correlator.stop_watching()
     pass

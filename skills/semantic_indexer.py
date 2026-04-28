@@ -1,4 +1,8 @@
-import faiss
+try:
+    import faiss
+except ImportError:
+    faiss = None
+
 import numpy as np
 import logging
 import pickle
@@ -24,15 +28,20 @@ class QwenEmbedder:
     def _initialize(self):
         if self._initialized:
             return
-        import torch
-        from transformers import AutoTokenizer, AutoModel
-        
-        logger.info(f"[Embedder] Loading {EMBEDDING_MODEL} | device=cpu | quant=int8")
-        self._tokenizer = AutoTokenizer.from_pretrained(EMBEDDING_MODEL, trust_remote_code=True)
-        model = AutoModel.from_pretrained(EMBEDDING_MODEL, trust_remote_code=True)
-        self._model = torch.quantization.quantize_dynamic(model, {torch.nn.Linear}, dtype=torch.qint8)
-        self._model.eval()
-        self._initialized = True
+        try:
+            import torch
+            from transformers import AutoTokenizer, AutoModel
+            
+            logger.info(f"[Embedder] Loading {EMBEDDING_MODEL} | device=cpu | quant=int8")
+            self._tokenizer = AutoTokenizer.from_pretrained(EMBEDDING_MODEL, trust_remote_code=True)
+            model = AutoModel.from_pretrained(EMBEDDING_MODEL, trust_remote_code=True)
+            # FIXED: Use torch.ao.quantization for PyTorch >= 2.0
+            self._model = torch.ao.quantization.quantize_dynamic(model, {torch.nn.Linear}, dtype=torch.qint8)
+            self._model.eval()
+            self._initialized = True
+        except ImportError:
+            logger.error("ML dependencies (torch, transformers) not installed. QwenEmbedder disabled.")
+            raise ImportError("Please install torch and transformers to use semantic search.")
 
     def _last_token_pool(self, last_hidden_state, attention_mask):
         import torch
@@ -62,9 +71,12 @@ class SemanticIndexer:
     def __init__(self, db_path: str, hsnw_m: int = 48):
         """
         Standardized Semantic Indexer using FAISS HNSW.
-        hsnw_m: Number of bi-directional links created for every new element during index construction.
-        Higher M = higher accuracy but larger memory/construction time. 48 is optimized for high-speed retrieval.
         """
+        if faiss is None:
+            logger.error("faiss-cpu not installed. SemanticIndexer disabled.")
+            self.index = None
+            return
+
         self.db_path = Path(db_path)
         self.db_path.mkdir(parents=True, exist_ok=True)
         
@@ -79,20 +91,20 @@ class SemanticIndexer:
             with open(self.metadata_file, "rb") as f:
                 self.metadata = pickle.load(f)
         else:
-            # Optimized HNSW index construction
-            # efConstruction: Controls index quality (higher = better search accuracy but slower construction)
             self.index = faiss.IndexHNSWFlat(self.dim, hsnw_m)
             self.index.hnsw.efConstruction = 128 
-            self.index.hnsw.efSearch = 64 # High-speed search parameter
+            self.index.hnsw.efSearch = 64
             self.metadata = []
 
     def index_text(self, text: str, meta: Dict[str, Any]):
+        if not self.index: return
         vecs = self.embedder.encode([text])
         self.index.add(np.array(vecs).astype('float32'))
         self.metadata.append({"content": text, "meta": meta})
         self._save()
 
     def index_project_docs(self, root_dir: str):
+        if not self.index: return
         root = Path(root_dir)
         texts, metas = [], []
         for path in root.rglob("*.md"):
@@ -109,6 +121,7 @@ class SemanticIndexer:
             self._save()
 
     def query(self, query_text: str, n_results: int = 3) -> List[Dict]:
+        if not self.index: return []
         vecs = self.embedder.encode([query_text])
         distances, indices = self.index.search(np.array(vecs).astype('float32'), n_results)
         results = []
@@ -120,6 +133,7 @@ class SemanticIndexer:
         return results
 
     def _save(self):
+        if not self.index: return
         faiss.write_index(self.index, str(self.index_file))
         with open(self.metadata_file, "wb") as f:
             pickle.dump(self.metadata, f)

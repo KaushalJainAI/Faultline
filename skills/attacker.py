@@ -11,7 +11,9 @@ logger = logging.getLogger("SiegeEngine")
 class SiegeEngine:
     """
     Standard SiegeEngine optimized for high-throughput internal testing.
-    SSRF protections removed for internal flexibility.
+    
+    WARNING: SSRF protections are intentionally omitted for internal flexibility.
+    Never point this engine at untrusted URLs.
     """
     def __init__(self, base_url: str):
         self.base_url = base_url.rstrip("/") + "/"

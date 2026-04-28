@@ -64,10 +64,9 @@ class GuardrailValidator:
     def _is_safe_path(self, target_path: str) -> bool:
         """
         Check if path contains sensitive directories or files.
-        Mirroring AIAAS ToolExecutor._is_safe_path logic.
         """
         path_obj = Path(target_path)
-        sensitive_names = {'.env', '.git', '.ssh', '.aws', 'secrets', 'credentials.json', 'db.sqlite3', 'venv'}
+        sensitive_names = {'.env', '.git', '.ssh', '.aws', 'secrets', 'credentials.json', 'venv'}
         for part in path_obj.parts:
             if part in sensitive_names or part.endswith('.pem') or part.endswith('.key'):
                 return False

@@ -1,3 +1,4 @@
+import uuid
 from django.db import models
 
 
@@ -9,7 +10,7 @@ class Campaign(models.Model):
         FAILED = "failed", "Failed"
         ERROR = "error", "Error"
 
-    id = models.UUIDField(primary_key=True, editable=False)
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.QUEUED)
     target_path = models.TextField()
     target_url = models.URLField()

@@ -15,7 +15,7 @@ from skills.medic import Medic
 logger = logging.getLogger("CampaignService")
 
 
-def _truncate(value: Any, limit: int = 4000) -> str:
+def _truncate(value: Any, limit: int = 16000) -> str:
     text = value if isinstance(value, str) else json.dumps(value, default=str, indent=2)
     return text[:limit]
 

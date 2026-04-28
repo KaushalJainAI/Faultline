@@ -53,7 +53,7 @@ class CampaignAPITests(TestCase):
                     content_type="application/json",
                 )
 
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 202)
         body = response.json()
         self.assertEqual(body["target"], str(Path(target_dir).resolve()))
         self.assertIn("campaign_id", body)
@@ -96,7 +96,7 @@ class CampaignAPITests(TestCase):
                     content_type="application/json",
                 )
 
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 202)
         self.assertIn("campaign_id", response.json())
         thread_cls.assert_called_once()
 

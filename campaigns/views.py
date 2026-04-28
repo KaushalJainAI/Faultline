@@ -1,3 +1,4 @@
+import os
 import uuid
 import logging
 import threading
@@ -27,6 +28,11 @@ class StartCampaignView(APIView):
     Triggers the Aegis-Breaker LangGraph agent to start a new chaos campaign.
     """
     def post(self, request, *args, **kwargs):
+        # Basic security check
+        api_key = os.environ.get("FAULTLINE_API_KEY")
+        if api_key and request.headers.get("X-Faultline-Key") != api_key:
+            return Response({"error": "Unauthorized"}, status=status.HTTP_401_UNAUTHORIZED)
+
         target_path = request.data.get("target_path") if hasattr(request.data, "get") else None
         configured, message = get_config_status(target_path or ".")
         if not configured:
@@ -39,7 +45,6 @@ class StartCampaignView(APIView):
         if serializer.is_valid():
             payload_data = serializer.validated_data
             campaign = Campaign.objects.create(
-                id=uuid.uuid4(),
                 target_path=payload_data["target_path"],
                 target_url=payload_data["target_url"],
                 start_command=payload_data["start_command"],
@@ -56,7 +61,7 @@ class StartCampaignView(APIView):
                 "status": campaign.status,
                 "tasks": ["Start target", "Index documentation", "Map structure", "Generate payloads", "Execute chaos run", "Write report"]
             }
-            return Response(CampaignResponseSerializer(response_data).data, status=status.HTTP_200_OK)
+            return Response(CampaignResponseSerializer(response_data).data, status=status.HTTP_202_ACCEPTED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 

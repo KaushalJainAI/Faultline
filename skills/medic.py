@@ -17,7 +17,7 @@ class Medic:
         self.process = None
 
     def start_server(self):
-        """Starts the target server process."""
+        """Starts the target server process and waits for health check."""
         logger.info(f"Starting server with command: {self.start_command}")
         try:
             self.process = subprocess.Popen(
@@ -28,8 +28,38 @@ class Medic:
                 stderr=subprocess.PIPE,
                 preexec_fn=None if os.name == 'nt' else os.setsid
             )
-            logger.info(f"Server started with PID: {self.process.pid}")
-            return True
+            logger.info(f"Server process launched (PID: {self.process.pid})")
+            
+            if not self.health_url:
+                logger.warning("No health_url provided. Waiting 2 seconds for cold start.")
+                time.sleep(2)
+                return self.process.poll() is None
+
+            # Poll health URL
+            timeout = 30
+            poll_interval = 1.0
+            deadline = time.monotonic() + timeout
+            
+            logger.info(f"Polling health URL: {self.health_url} (timeout={timeout}s)")
+            while time.monotonic() < deadline:
+                if self.process.poll() is not None:
+                    _, stderr = self.process.communicate()
+                    logger.error(f"Server process crashed during startup: {stderr.decode()}")
+                    return False
+                
+                try:
+                    with httpx.Client(timeout=2.0) as client:
+                        response = client.get(self.health_url)
+                        if response.status_code < 500:
+                            logger.info("Server is healthy and ready.")
+                            return True
+                except (httpx.RequestError, httpx.HTTPStatusError):
+                    pass
+                
+                time.sleep(poll_interval)
+            
+            logger.error("Timed out waiting for server health check.")
+            return False
         except Exception as e:
             logger.error(f"Failed to start server: {e}")
             return False

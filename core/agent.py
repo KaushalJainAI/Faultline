@@ -45,7 +45,7 @@ def build_llm():
         return ChatAnthropic(
             model=model_name or "claude-3-5-sonnet-20240620",
             anthropic_api_key=api_key,
-            temperature=0.7
+            temperature=0.2
         )
 
     elif provider == "google":
@@ -54,9 +54,9 @@ def build_llm():
             return None
         api_key = os.environ.get("GOOGLE_API_KEY")
         return ChatGoogleGenerativeAI(
-            model=model_name or "gemini-1.5-flash",
+            model=model_name or "gemini-2.0-flash-001",
             google_api_key=api_key,
-            temperature=0.7
+            temperature=0.2
         )
 
     elif provider in {"openai", "openrouter"}:
@@ -71,10 +71,10 @@ def build_llm():
             base_url = base_url or "https://openrouter.ai/api/v1"
         
         kwargs = {
-            "model": model_name or ("google/gemini-flash-1.5" if provider == "openrouter" else "gpt-4o"),
+            "model": model_name or ("google/gemini-2.0-flash-001" if provider == "openrouter" else "gpt-4o"),
             "openai_api_key": api_key,
             "openai_api_base": base_url,
-            "temperature": 0.7,
+            "temperature": 0.2,
         }
         if provider == "openrouter":
             kwargs["default_headers"] = {
@@ -153,7 +153,8 @@ class AegisAgent:
         llm = build_llm()
         if not llm:
             logger.warning("LLM not configured. Agent returning dummy response.")
-            return {"messages": [AIMessage(content="LLM is not configured. Set FAULTLINE_PROVIDER and the matching API key or CLI login before running campaigns.")]}
+            # We return a message that will trigger 'end' in should_continue
+            return {"messages": [AIMessage(content="LLM is not configured. Set FAULTLINE_PROVIDER and the matching API key or CLI login before running campaigns.", additional_kwargs={"finish_reason": "stop"})]}
 
         # Bind tools to the model
         model_with_tools = llm.bind_tools(FAULTLINE_TOOLS)

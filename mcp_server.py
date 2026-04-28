@@ -8,6 +8,14 @@ import os
 # Add app to path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
+# Configure Django
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
+try:
+    import django
+    django.setup()
+except Exception:
+    pass
+
 from mcp.server.fastmcp import FastMCP
 from core.tools import (
     analyze_project_structure,

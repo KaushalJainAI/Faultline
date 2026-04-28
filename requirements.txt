@@ -9,12 +9,14 @@ httpx
 psutil
 watchdog
 ruff
-faiss-cpu
-numpy
-transformers
-torch
 python-dotenv
 pytest
 mcp
 plotly
 pandas
+
+# ML/Semantic Indexing (Optional, ~2GB)
+# faiss-cpu
+# numpy
+# transformers
+# torch
