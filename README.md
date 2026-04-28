@@ -1,52 +1,108 @@
-# Faultline: Autonomous Chaos Engineering Platform
+# Faultline
 
-Faultline is a generalized AI-driven testing and debugging platform designed to autonomously identify vulnerabilities, crash points, and logic flaws in software projects.
+Faultline is an early-stage control plane for AI-assisted QA and chaos engineering. It combines static project mapping, documentation indexing, functional test generation, adversarial HTTP payload execution, log correlation, and proposed patch generation.
 
-## Project Structure
+The current implementation is intentionally developer-facing: you point it at a target project, start or connect to the target application, and let the Aegis-Breaker agent inspect, test, attack, and summarize what it finds.
+
+## Project Layout
 
 - `config/`: Django project configuration.
-- `campaigns/`: API app for orchestrating chaos campaigns.
-- `core/`: LangGraph-powered agentic logic and state management.
-- `skills/`: Reusable tool library (Medic, Cartographer, Attacker, etc.).
-- `db/`: Local storage for vector embeddings (FAISS) and campaign reports.
-- `reports/`: Generated vulnerability and post-mortem reports.
+- `campaigns/`: REST API for starting campaigns and generating project maps.
+- `core/`: LangGraph agent orchestration, prompts, and LangChain tool bindings.
+- `skills/`: Reusable capabilities for mapping, testing, attacking, log correlation, patch proposals, and semantic indexing.
+- `scripts/`: Local smoke-test and campaign runner scripts.
+- `docs/`: API, agent, and skills documentation.
+- `reports/`: Generated vulnerability and campaign reports.
 
-## 📖 Documentation
+## Quick Start
 
-- [**API Guide**](docs/API.md): Endpoint definitions and request/response schemas.
-- [**Skills Library**](docs/SKILLS.md): Deep dive into the Medic, Cartographer, and Siege Engine.
-- [**Agent Workflow**](docs/AGENT.md): How the LangGraph orchestration works.
+1. Install dependencies:
 
-## 🚀 Quick Start
-
-1. **Install Dependencies**:
    ```bash
    pip install -r requirements.txt
    ```
 
-2. **Run the Control Plane**:
+2. Run tests:
+
+   ```bash
+   python manage.py test
+   python -m compileall campaigns core skills scripts mcp_server.py manage.py
+   ```
+
+3. Apply database migrations:
+
+   ```bash
+   python manage.py migrate
+   ```
+
+4. Configure the LLM key:
+
+   ```bash
+   set OPENROUTER_API_KEY=your_key_here
+   ```
+
+5. Start the control plane:
+
    ```bash
    python manage.py runserver
    ```
 
-3. **Access API**:
-   The API is available at `http://localhost:8000/api/v1/campaign/`.
+6. Start a campaign:
 
-## Current Progress: Phase 1-4 (Complete)
+   ```bash
+   curl -X POST http://localhost:8000/api/v1/campaign/start/ ^
+     -H "Content-Type: application/json" ^
+     -d "{\"target_path\":\"C:/path/to/project\",\"target_url\":\"http://127.0.0.1:9000\",\"start_command\":\"python manage.py runserver 9000\",\"log_file\":\"server.log\"}"
+   ```
 
-- [x] **Project Initialization**: Basic directory structure and VENV setup.
-- [x] **The Medic**: Implemented process monitoring, health checks, and auto-restart capabilities.
-- [x] **The Cartographer**: AST-based static analysis to map project structure.
-- [x] **Semantic Indexer**: Vector-based documentation-to-code mapping using FAISS.
-- [x] **Control Plane**: Initial Django REST framework shell for triggering tasks.
-- [x] **Guardrail Validator**: Implementing import/signature checking for AI-generated code.
-- [x] **The Forge**: LLM-driven adversarial payload generation prompt setup.
-- [x] **The Siege Engine**: Async HTTPX attacker for high-concurrency stress testing.
-- [x] **The Coroner**: Watchdog-based log correlator for capturing tracebacks matching attack requests.
-- [x] **The Brain**: LangGraph state machine orchestrating the complete attack and reporting flow.
+## Agent Configuration
 
-## Next Steps
+The LangGraph agent uses OpenRouter through `langchain-openai`. `OPENROUTER_API_KEY` is required before starting a campaign:
 
-- Integrate an actual LLM instance (e.g. ChatOpenAI or local Ollama) into `agent.py`.
-- Add more sophisticated syntax-tree based adversarial generation models.
-- Run an end-to-end chaos campaign against a live test application.
+```bash
+set OPENROUTER_API_KEY=your_key_here
+```
+
+Without a configured key, lower-level tools and project mapping still work, but `POST /api/v1/campaign/start/` returns a configuration error.
+
+## Useful Commands
+
+Run the tool smoke test:
+
+```bash
+python scripts/test_tools.py
+```
+
+Run the agent directly:
+
+```bash
+python scripts/run_campaign.py --target-dir C:/path/to/project --target-url http://127.0.0.1:9000 --log-file C:/path/to/project/server.log
+```
+
+## Documentation
+
+- [API Guide](docs/API.md)
+- [Skills Library](docs/SKILLS.md)
+- [Agent Workflow](docs/AGENT.md)
+
+## Current State
+
+Implemented:
+
+- Django REST control plane.
+- Database-backed campaign, finding, and tool-run persistence.
+- AST-based Python project mapper.
+- Basic Django/DRF route, view, and serializer hints.
+- LangChain tools and MCP wrappers.
+- Async HTTP attack engine with request ID tracing.
+- Watchdog-based log correlation.
+- Pytest-based functional test runner.
+- Safe patch proposal writer.
+- FAISS-backed semantic documentation indexer.
+- Markdown reports under `reports/campaign_<id>.md`.
+
+Known next steps:
+
+- Add first-class target process lifecycle controls to direct CLI runs.
+- Add richer Django/DRF endpoint schema extraction from serializers and routers.
+- Add integration tests against a disposable demo target application.

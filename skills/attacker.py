@@ -3,6 +3,7 @@ import httpx
 import uuid
 import logging
 from typing import List, Dict
+from urllib.parse import urljoin
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("SiegeEngine")
@@ -13,11 +14,11 @@ class SiegeEngine:
     SSRF protections removed for internal flexibility.
     """
     def __init__(self, base_url: str):
-        self.base_url = base_url
+        self.base_url = base_url.rstrip("/") + "/"
         self.results = []
 
     async def _send_payload(self, client: httpx.AsyncClient, method: str, endpoint: str, payload: Dict, headers: Dict):
-        url = f"{self.base_url}{endpoint}"
+        url = urljoin(self.base_url, endpoint.lstrip("/"))
         
         # Inject Chaos ID
         request_id = str(uuid.uuid4())
@@ -63,6 +64,9 @@ class SiegeEngine:
         async with httpx.AsyncClient(timeout=10.0) as client:
             tasks = []
             for attack in payloads:
+                if not isinstance(attack, dict):
+                    logger.warning("Skipping malformed attack payload: %r", attack)
+                    continue
                 tasks.append(
                     self._send_payload(
                         client,
@@ -79,7 +83,7 @@ class SiegeEngine:
                 if res:
                     self.results.append(res)
                     if res.get("status_code") and res["status_code"] >= 500:
-                        logger.error(f"🔥 Potential Crash! Request ID: {res['request_id']} on {res['endpoint']}")
+                        logger.error("Potential crash. Request ID: %s on %s", res["request_id"], res["endpoint"])
                     
         return self.results
 

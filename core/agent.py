@@ -1,35 +1,38 @@
 import os
-import json
 import logging
-from typing import Dict, TypedDict, List, Annotated
+from typing import TypedDict, Annotated
 from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, BaseMessage
 
-# OpenRouter configuration
 try:
     from langchain_openai import ChatOpenAI
-    import os
-    
-    # Model can be any OpenRouter supported model (e.g., 'google/gemini-pro-1.5-exp', 'anthropic/claude-3.5-sonnet')
-    llm = ChatOpenAI(
-        model="google/gemini-flash-1.5", 
-        openai_api_key=os.environ.get("OPENROUTER_API_KEY", "dummy_key"),
-        openai_api_base="https://openrouter.ai/api/v1",
-        default_headers={
-            "HTTP-Referer": "https://github.com/faultline-chaos", # Required by OpenRouter
-            "X-Title": "Faultline Aegis-Breaker",               # Required by OpenRouter
-        },
-        temperature=0.7
-    )
 except ImportError:
-    llm = None
+    ChatOpenAI = None
 
 from core.prompts import SYSTEM_PROMPT
 from core.tools import FAULTLINE_TOOLS
 
 logger = logging.getLogger("AegisAgent")
+
+
+def build_llm():
+    if not ChatOpenAI:
+        return None
+    api_key = os.environ.get("OPENROUTER_API_KEY")
+    if not api_key:
+        return None
+    return ChatOpenAI(
+        model=os.environ.get("FAULTLINE_MODEL", "google/gemini-flash-1.5"),
+        openai_api_key=api_key,
+        openai_api_base="https://openrouter.ai/api/v1",
+        default_headers={
+            "HTTP-Referer": "https://github.com/faultline-chaos",
+            "X-Title": "Faultline Aegis-Breaker",
+        },
+        temperature=0.7,
+    )
 
 class CampaignState(TypedDict):
     """
@@ -88,9 +91,10 @@ class AegisAgent:
         The main intelligence node. Binds tools to the LLM and generates a response.
         """
         logger.info("Phase: Agent Reasoning")
+        llm = build_llm()
         if not llm:
             logger.warning("LLM not configured. Agent returning dummy response.")
-            return {"messages": [AIMessage(content="LLM is not installed. Please configure ChatOpenAI.")]}
+            return {"messages": [AIMessage(content="LLM is not configured. Set OPENROUTER_API_KEY before running campaigns.")]}
 
         # Bind tools to the model
         model_with_tools = llm.bind_tools(FAULTLINE_TOOLS)

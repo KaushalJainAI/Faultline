@@ -1,30 +1,66 @@
-# Faultline Skills (The Tool Library)
+# Faultline Skills
 
-Skills are independent Python services used by the Aegis-Breaker agent to interact with the target application and the host operating system.
+Skills are standalone Python modules used by the agent and exposed through LangChain tools.
 
-## 🩺 The Medic (`medic.py`)
-Responsible for the lifecycle of the target application.
-- **Monitoring**: Pings a health URL or checks the PID status.
-- **Resurrection**: If the server crashes during an attack, the Medic kills orphaned processes and restarts the server using the `start_command`.
-- **Recursive Kill**: Uses `psutil` to ensure child processes (like Gunicorn workers) are cleaned up.
+## Medic (`skills/medic.py`)
 
-## 🗺️ The Cartographer (`ast_grapher.py`)
-Provides structural awareness to the AI.
-- **Static Analysis**: Uses the `ast` module to map classes, functions, and imports without executing code.
-- **Dependency Mapping**: Identifies which modules depend on each other to help the agent calculate the "blast radius" of an attack.
+Manages the target application process.
 
-## 🎯 The Siege Engine (`attacker.py`)
-The heavy-artillery of the platform.
-- **Asynchronous Bursting**: Uses `httpx` and `asyncio` to send high volumes of concurrent requests.
-- **Tracing**: Injects `X-Aegis-Request-ID` headers into every request, allowing the Coroner to link crashes back to specific payloads.
+- Starts the target with `start_command`.
+- Optionally checks a `health_url`.
+- Kills the target process and child processes when a campaign ends.
+- Can restart the target through `resurrect`.
 
-## 🩸 The Coroner (`log_correlator.py`)
-Monitors the target's heartbeat (logs).
-- **Log Tailing**: Uses `watchdog` to monitor file system events on log files.
-- **Crash Correlation**: Scans for tracebacks and matches them to the `X-Aegis-Request-ID` captured in the log stream.
+## Cartographer (`skills/ast_grapher.py`)
 
-## 🛡️ Guardrail Validator (`guardrails.py`)
-Prevents AI hallucinations.
-- **Import Verification**: Checks that any modules the AI tries to use in its test scripts actually exist in the target's environment.
-- **Signature Checking**: Ensures that any mocked functions match the real backend signatures.
-- **Linting**: Runs `ruff` to catch syntax or logic errors in AI-generated code.
+Builds a structural map of Python projects without importing target code.
+
+- Records top-level classes, methods, functions, and imports.
+- Skips virtual environments, caches, Git metadata, and generated patch folders.
+- Resets its graph on every `analyze_project` call so repeated calls are stable.
+- Adds lightweight Django/DRF hints for simple `path(...)`, `router.register(...)`, view classes, and serializer classes.
+
+## Siege Engine (`skills/attacker.py`)
+
+Executes adversarial HTTP requests.
+
+- Uses `httpx.AsyncClient` and `asyncio.gather` for concurrent requests.
+- Supports `GET`, `POST`, `PUT`, and `DELETE`.
+- Injects `X-Aegis-Request-ID` into every request.
+- Skips malformed attack definitions instead of failing the whole run.
+
+## Coroner (`skills/log_correlator.py`)
+
+Watches a log file during attacks and records correlated errors.
+
+- Uses `watchdog` for file modification events.
+- Looks for tracebacks, exceptions, and errors.
+- Associates log lines with `X-Aegis-Request-ID` when the target logs that header.
+
+## Guardrail Validator (`skills/guardrails.py`)
+
+Checks generated Python snippets before they are used.
+
+- Parses snippets with `ast`.
+- Verifies imported modules exist in the environment or target project.
+- Optionally runs `ruff` against a file when available.
+- Blocks obviously sensitive paths such as `.env`, `.git`, private keys, databases, and virtual environments.
+
+## QA Engineer (`skills/qa_engineer.py`)
+
+Runs generated functional tests and saves proposed patches.
+
+- Writes temporary pytest files inside the target project.
+- Deletes generated test files after execution.
+- Writes proposed code fixes under `.aegis_patches`.
+- Rejects patch paths that escape the target directory.
+
+## Semantic Indexer (`skills/semantic_indexer.py`)
+
+Indexes Markdown documentation for semantic retrieval.
+
+- Uses Qwen embeddings.
+- Stores vectors in FAISS HNSW.
+- Stores document metadata beside the index.
+
+This component can download and load a large embedding model on first use.

@@ -1,64 +1,93 @@
 import uuid
 import logging
-import asyncio
+import os
+import threading
+from pathlib import Path
 from django.http import JsonResponse
+from django.db.models import Count
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
-from asgiref.sync import sync_to_async
 
-from campaigns.serializers import CampaignCreateSerializer, CampaignResponseSerializer, ProjectMapRequestSerializer
+from campaigns.models import Campaign
+from campaigns.serializers import (
+    CampaignCreateSerializer,
+    CampaignDetailSerializer,
+    CampaignResponseSerializer,
+    FindingSerializer,
+    ProjectMapRequestSerializer,
+)
+from campaigns.services import run_campaign_pipeline
 from skills.ast_grapher import ASTGrapher
-from core.agent import AegisAgent
 
 logger = logging.getLogger("CampaignAPI")
-
-async def run_agent_background(campaign_id: str, payload_data: dict):
-    """Background task to run the full chaos campaign."""
-    try:
-        agent = AegisAgent()
-        logger.info(f"Background campaign {campaign_id} started.")
-        await agent.run_campaign(
-            target_dir=payload_data['target_path'],
-            target_url=payload_data['target_url'],
-            log_file=payload_data.get('log_file', 'server.log'),
-            initial_prompt=f"Start a chaos campaign against {payload_data['target_path']}."
-        )
-        logger.info(f"Background campaign {campaign_id} completed.")
-    except Exception as e:
-        logger.error(f"Campaign {campaign_id} failed: {e}")
 
 class StartCampaignView(APIView):
     """
     Triggers the Aegis-Breaker LangGraph agent to start a new chaos campaign.
     """
     def post(self, request, *args, **kwargs):
+        if not os.environ.get("OPENROUTER_API_KEY"):
+            return Response(
+                {"error": "OPENROUTER_API_KEY is required to start an autonomous campaign."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         serializer = CampaignCreateSerializer(data=request.data)
         if serializer.is_valid():
             payload_data = serializer.validated_data
-            campaign_id = str(uuid.uuid4())
-            
-            # Fire and forget the agent in the background
-            # Note: in a true production DRF app you might use Celery. 
-            # We are using asyncio.create_task assuming an ASGI server (like uvicorn or daphne).
-            try:
-                loop = asyncio.get_running_loop()
-                loop.create_task(run_agent_background(campaign_id, payload_data))
-            except RuntimeError:
-                # Fallback to threading if not running in an async event loop
-                import threading
-                def thread_runner():
-                    asyncio.run(run_agent_background(campaign_id, payload_data))
-                threading.Thread(target=thread_runner, daemon=True).start()
+            campaign = Campaign.objects.create(
+                id=uuid.uuid4(),
+                target_path=payload_data["target_path"],
+                target_url=payload_data["target_url"],
+                start_command=payload_data["start_command"],
+                health_url=payload_data.get("health_url") or None,
+                log_file=payload_data.get("log_file", "server.log"),
+            )
+
+            threading.Thread(target=run_campaign_pipeline, args=(str(campaign.id),), daemon=True).start()
 
             response_data = {
                 "message": "Chaos campaign initiated successfully in the background.",
-                "target": payload_data['target_path'],
-                "campaign_id": campaign_id,
-                "tasks": ["Indexing", "Vulnerability Mapping", "Payload Generation"]
+                "target": campaign.target_path,
+                "campaign_id": str(campaign.id),
+                "status": campaign.status,
+                "tasks": ["Start target", "Index documentation", "Map structure", "Generate payloads", "Execute chaos run", "Write report"]
             }
             return Response(CampaignResponseSerializer(response_data).data, status=status.HTTP_200_OK)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class CampaignDetailView(APIView):
+    def get(self, request, campaign_id, *args, **kwargs):
+        try:
+            campaign = Campaign.objects.annotate(finding_count=Count("findings")).get(id=campaign_id)
+        except Campaign.DoesNotExist:
+            return Response({"error": "Campaign not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response(CampaignDetailSerializer(campaign).data)
+
+
+class CampaignFindingsView(APIView):
+    def get(self, request, campaign_id, *args, **kwargs):
+        try:
+            campaign = Campaign.objects.get(id=campaign_id)
+        except Campaign.DoesNotExist:
+            return Response({"error": "Campaign not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response(FindingSerializer(campaign.findings.all(), many=True).data)
+
+
+class CampaignReportView(APIView):
+    def get(self, request, campaign_id, *args, **kwargs):
+        try:
+            campaign = Campaign.objects.get(id=campaign_id)
+        except Campaign.DoesNotExist:
+            return Response({"error": "Campaign not found."}, status=status.HTTP_404_NOT_FOUND)
+        if not campaign.report_path:
+            return Response({"error": "Campaign report is not ready."}, status=status.HTTP_404_NOT_FOUND)
+        report_path = Path(campaign.report_path)
+        if not report_path.exists():
+            return Response({"error": "Campaign report file was not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"campaign_id": str(campaign.id), "report": report_path.read_text(encoding="utf-8")})
 
 class ProjectMapView(APIView):
     """

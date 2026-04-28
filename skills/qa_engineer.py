@@ -4,6 +4,7 @@ import tempfile
 import logging
 import uuid
 from typing import Tuple
+from pathlib import Path
 
 logger = logging.getLogger("QAEngineer")
 
@@ -12,7 +13,14 @@ class QAEngineer:
     Provides Functional Testing and Auto-Healing capabilities (TestSprite DNA).
     """
     def __init__(self, target_dir: str):
-        self.target_dir = target_dir
+        self.target_dir = str(Path(target_dir).resolve())
+
+    def _resolve_target_path(self, file_path: str) -> Path:
+        target_root = Path(self.target_dir).resolve()
+        resolved = (target_root / file_path).resolve()
+        if target_root != resolved and target_root not in resolved.parents:
+            raise ValueError("Target file must be inside target_dir.")
+        return resolved
 
     def run_functional_test(self, test_code: str) -> Tuple[bool, str]:
         """
@@ -22,7 +30,7 @@ class QAEngineer:
         
         # Create a temporary test file in the target directory
         test_filename = f"test_aegis_generated_{uuid.uuid4().hex[:8]}.py"
-        test_filepath = os.path.join(self.target_dir, test_filename)
+        test_filepath = str(self._resolve_target_path(test_filename))
         
         try:
             with open(test_filepath, "w", encoding="utf-8") as f:
@@ -65,7 +73,10 @@ class QAEngineer:
         logger.info(f"Generating proposed patch for {file_path}")
         
         # Ensure the file exists
-        full_target_path = os.path.join(self.target_dir, file_path)
+        try:
+            full_target_path = self._resolve_target_path(file_path)
+        except ValueError as e:
+            return f"Error: {e}"
         if not os.path.exists(full_target_path):
             return f"Error: Target file {file_path} does not exist."
             

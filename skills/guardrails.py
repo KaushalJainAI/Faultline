@@ -1,8 +1,8 @@
 import importlib.util
-import inspect
 import ast
 import subprocess
 import os
+from pathlib import Path
 
 class GuardrailValidator:
     def __init__(self, target_dir):
@@ -33,6 +33,10 @@ class GuardrailValidator:
         """Checks if a module can be imported."""
         # Split to handle things like 'django.db.models'
         base_module = module_name.split('.')[0]
+        local_module = Path(self.target_dir, f"{base_module}.py")
+        local_package = Path(self.target_dir, base_module, "__init__.py")
+        if local_module.exists() or local_package.exists():
+            return True
         try:
             return importlib.util.find_spec(base_module) is not None
         except Exception:
@@ -41,8 +45,12 @@ class GuardrailValidator:
     def lint_code(self, file_path):
         """Runs ruff to catch obvious logic or syntax errors."""
         try:
+            ruff_cmd = "ruff"
+            local_ruff = Path(self.target_dir) / "venv" / ("Scripts" if os.name == "nt" else "bin") / ("ruff.exe" if os.name == "nt" else "ruff")
+            if local_ruff.exists():
+                ruff_cmd = str(local_ruff)
             result = subprocess.run(
-                ["ruff", "check", file_path],
+                [ruff_cmd, "check", file_path],
                 capture_output=True,
                 text=True,
                 cwd=self.target_dir

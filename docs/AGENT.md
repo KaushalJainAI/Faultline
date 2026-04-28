@@ -1,22 +1,52 @@
-# The Aegis-Breaker Agent (Core Orchestration)
+# Aegis-Breaker Agent
 
-The "Brain" of Faultline is a state machine powered by **LangGraph**. It orchestrates the flow from initial project discovery to final vulnerability reporting.
+Aegis-Breaker is the LangGraph orchestration layer for Faultline. Its job is to combine normal QA verification with adversarial chaos testing.
 
-## 🔄 The State Machine Workflow
+## Runtime Flow
 
-1.  **`index_project`**: The agent uses the Cartographer skill to build a JSON representation of the target project's topology.
-2.  **`select_target`**: The agent analyzes the project map and documentation (via Semantic Indexer) to identify high-risk endpoints (e.g., chat processing, database commits).
-3.  **`draft_attack`**: The LLM generates a series of adversarial payloads (Type confusion, SQLi, Null injections) tailored to the target's schema.
-4.  **`validate_payloads`**: The generated attacks are passed through the Guardrail skill. If the AI hallucinations invalid code or non-existent endpoints, the flow loops back to `draft_attack` for a fix.
-5.  **`execute_attack`**: The agent triggers the Siege Engine (high-concurrency bursts) while the Coroner monitors the logs for tracebacks.
-6.  **`synthesize_report`**: All data is consolidated into a Markdown report, linking each crash traceback to the specific payload and code line that caused it.
+The current graph is intentionally simple:
 
-## 🧠 Memory & Context
-The agent maintains a `CampaignState` dictionary that tracks:
-- **`project_graph`**: Structural map.
-- **`generated_payloads`**: List of planned attacks.
-- **`attack_results`**: Status codes and response times.
-- **`crashes`**: Correlated tracebacks from the server logs.
+1. `agent`: Calls the configured chat model with campaign context and the Faultline tool list.
+2. `tools`: Executes any requested tool calls.
+3. Loop back to `agent` until the model returns a message without tool calls.
 
-## ⚖️ Self-Healing Loop
-If the agent detects that it has crashed the target server, it pauses the attack, waits for the **Medic** skill to resurrect the server, and then continues the campaign from where it left off.
+The model receives:
+
+- Target directory.
+- Target base URL.
+- Target log file.
+- The system prompt from `core/prompts.py`.
+
+## Available Tools
+
+- `analyze_project_structure`: AST map of Python files, classes, functions, and imports.
+- `index_project_documentation`: Indexes Markdown documentation into FAISS.
+- `query_knowledge_base`: Searches indexed documentation.
+- `validate_python_code`: Checks generated Python snippets for syntax and missing imports.
+- `run_functional_test`: Writes and runs a temporary pytest file.
+- `execute_chaos_campaign`: Sends adversarial HTTP payloads and correlates log crashes.
+- `propose_code_patch`: Writes proposed fixes into `.aegis_patches`.
+- `save_vulnerability_report`: Saves Markdown reports into `reports/`.
+
+## Configuration
+
+The default LLM client points at OpenRouter through `ChatOpenAI`. Set:
+
+```bash
+set OPENROUTER_API_KEY=your_key_here
+```
+
+If `langchain-openai` or `OPENROUTER_API_KEY` is unavailable, the agent returns a configuration message instead of running a real campaign. The campaign start API also rejects missing `OPENROUTER_API_KEY` before creating a background run.
+
+## Intended Campaign Behavior
+
+A complete campaign should:
+
+1. Discover structure and documentation intent.
+2. Verify expected behavior with generated functional tests.
+3. Generate adversarial payloads from discovered endpoint context.
+4. Execute attacks against the target URL.
+5. Correlate crashes from logs using `X-Aegis-Request-ID`.
+6. Save a report and propose patches when useful.
+
+Campaigns now persist status, tool runs, findings, and Markdown report paths in the Django database. Richer endpoint schema extraction remains a planned next step.

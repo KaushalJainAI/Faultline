@@ -1,5 +1,6 @@
 import time
 import re
+from pathlib import Path
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 import logging
@@ -9,23 +10,27 @@ logger = logging.getLogger("Coroner")
 
 class LogFileHandler(FileSystemEventHandler):
     def __init__(self, target_file, callback):
-        self.target_file = target_file
+        self.target_file = str(Path(target_file).resolve())
         self.callback = callback
         self._file = open(self.target_file, 'r', encoding='utf-8', errors='ignore')
         # Seek to the end of file
         self._file.seek(0, 2)
 
     def on_modified(self, event):
-        if event.src_path == self.target_file:
+        if str(Path(event.src_path).resolve()) == self.target_file:
             lines = self._file.readlines()
             for line in lines:
                 self.callback(line)
+
+    def close(self):
+        self._file.close()
 
 class LogCorrelator:
     def __init__(self, log_path: str):
         self.log_path = log_path
         self.observer = Observer()
         self.crashes = {}
+        self._handler = None
 
     def _process_log_line(self, line: str):
         # Extremely basic regex to find our injected Chaos ID in the logs
@@ -44,6 +49,7 @@ class LogCorrelator:
     def start_watching(self):
         try:
             event_handler = LogFileHandler(self.log_path, self._process_log_line)
+            self._handler = event_handler
             # Watchdog expects a directory, so we watch the directory containing the log
             log_dir = "/".join(self.log_path.replace("\\", "/").split("/")[:-1])
             if not log_dir:
@@ -62,6 +68,8 @@ class LogCorrelator:
     def stop_watching(self):
         self.observer.stop()
         self.observer.join()
+        if self._handler:
+            self._handler.close()
         logger.info("Stopped watching log file.")
 
     def get_correlations(self):
