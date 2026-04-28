@@ -1,7 +1,6 @@
 import asyncio
 import json
 import logging
-import os
 from pathlib import Path
 from typing import Any, Callable
 
@@ -9,6 +8,7 @@ from django.utils import timezone
 
 from campaigns.models import Campaign, Finding, ToolRun
 from core.agent import AegisAgent
+from core.provider_config import get_config_status
 from core.tools import analyze_project_structure, index_project_documentation
 from skills.medic import Medic
 
@@ -155,9 +155,10 @@ def run_campaign_pipeline(campaign_id: str) -> None:
     campaign = Campaign.objects.get(id=campaign_id)
     medic = None
 
-    if not os.environ.get("OPENROUTER_API_KEY"):
+    configured, message = get_config_status(campaign.target_path)
+    if not configured:
         campaign.status = Campaign.Status.ERROR
-        campaign.error_message = "OPENROUTER_API_KEY is required to run autonomous campaigns."
+        campaign.error_message = message
         campaign.finished_at = timezone.now()
         campaign.save(update_fields=["status", "error_message", "finished_at"])
         _create_error_finding(campaign, "Campaign configuration error", campaign.error_message)

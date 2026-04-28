@@ -35,10 +35,20 @@ The current implementation is intentionally developer-facing: you point it at a 
    python manage.py migrate
    ```
 
-4. Configure the LLM key:
+4. Configure an LLM provider.
+
+   OpenRouter is the default API route:
 
    ```bash
    set OPENROUTER_API_KEY=your_key_here
+   ```
+
+   To use subscription-backed CLIs instead, install and log in to the CLI, then set one of:
+
+   ```bash
+   set FAULTLINE_PROVIDER=claude_cli
+   set FAULTLINE_PROVIDER=gemini_cli
+   set FAULTLINE_PROVIDER=codex_cli
    ```
 
 5. Start the control plane:
@@ -57,13 +67,48 @@ The current implementation is intentionally developer-facing: you point it at a 
 
 ## Agent Configuration
 
-The LangGraph agent uses OpenRouter through `langchain-openai`. `OPENROUTER_API_KEY` is required before starting a campaign:
+The default LangGraph agent uses OpenRouter through `langchain-openai`:
 
 ```bash
 set OPENROUTER_API_KEY=your_key_here
 ```
 
-Without a configured key, lower-level tools and project mapping still work, but `POST /api/v1/campaign/start/` returns a configuration error.
+You can also choose direct API providers:
+
+```bash
+set FAULTLINE_PROVIDER=openai
+set OPENAI_API_KEY=your_key_here
+
+set FAULTLINE_PROVIDER=anthropic
+set ANTHROPIC_API_KEY=your_key_here
+
+set FAULTLINE_PROVIDER=google
+set GOOGLE_API_KEY=your_key_here
+```
+
+For subsidized subscription usage, set `FAULTLINE_PROVIDER` to `claude_cli`, `gemini_cli`, or `codex_cli`. Those modes delegate the campaign prompt to the authenticated local CLI instead of requiring OpenRouter API spend.
+
+The CLI commands are run in non-interactive prompt mode:
+
+```bash
+claude -p "<prompt>"
+gemini -p "<prompt>" --skip-trust
+codex exec "<prompt>" --cd "<target_dir>" --sandbox read-only
+```
+
+You can add provider-specific flags without changing code:
+
+```bash
+set FAULTLINE_CLAUDE_BINARY=C:\path\to\claude.cmd
+set FAULTLINE_CLAUDE_CLI_ARGS=--permission-mode plan
+set FAULTLINE_GEMINI_BINARY=gemini
+set FAULTLINE_GEMINI_CLI_ARGS=--model gemini-2.5-pro
+set FAULTLINE_CODEX_BINARY=codex
+set FAULTLINE_CODEX_SANDBOX=workspace-write
+set FAULTLINE_CODEX_CLI_ARGS=--model gpt-5.2
+```
+
+Without a configured API key or authenticated CLI, lower-level tools and project mapping still work, but `POST /api/v1/campaign/start/` returns a configuration error.
 
 ## Useful Commands
 

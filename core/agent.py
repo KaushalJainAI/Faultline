@@ -1,5 +1,6 @@
 import os
 import logging
+import asyncio
 from typing import TypedDict, Annotated
 from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
@@ -11,28 +12,79 @@ try:
 except ImportError:
     ChatOpenAI = None
 
+try:
+    from langchain_anthropic import ChatAnthropic
+except ImportError:
+    ChatAnthropic = None
+
+try:
+    from langchain_google_genai import ChatGoogleGenerativeAI
+except ImportError:
+    ChatGoogleGenerativeAI = None
+
 from core.prompts import SYSTEM_PROMPT
 from core.tools import FAULTLINE_TOOLS
+from core.cli_provider import ProviderManager
+from core.provider_config import get_cli_provider_name, get_provider
 
 logger = logging.getLogger("AegisAgent")
 
 
 def build_llm():
-    if not ChatOpenAI:
+    provider = get_provider()
+    model_name = os.environ.get("FAULTLINE_MODEL")
+
+    if get_cli_provider_name(provider):
         return None
-    api_key = os.environ.get("OPENROUTER_API_KEY")
-    if not api_key:
-        return None
-    return ChatOpenAI(
-        model=os.environ.get("FAULTLINE_MODEL", "google/gemini-flash-1.5"),
-        openai_api_key=api_key,
-        openai_api_base="https://openrouter.ai/api/v1",
-        default_headers={
-            "HTTP-Referer": "https://github.com/faultline-chaos",
-            "X-Title": "Faultline Aegis-Breaker",
-        },
-        temperature=0.7,
-    )
+
+    if provider == "anthropic":
+        if not ChatAnthropic:
+            logger.error("langchain-anthropic not installed")
+            return None
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        return ChatAnthropic(
+            model=model_name or "claude-3-5-sonnet-20240620",
+            anthropic_api_key=api_key,
+            temperature=0.7
+        )
+
+    elif provider == "google":
+        if not ChatGoogleGenerativeAI:
+            logger.error("langchain-google-genai not installed")
+            return None
+        api_key = os.environ.get("GOOGLE_API_KEY")
+        return ChatGoogleGenerativeAI(
+            model=model_name or "gemini-1.5-flash",
+            google_api_key=api_key,
+            temperature=0.7
+        )
+
+    elif provider in {"openai", "openrouter"}:
+        if not ChatOpenAI:
+            logger.error("langchain-openai not installed")
+            return None
+        
+        api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("OPENROUTER_API_KEY")
+        base_url = os.environ.get("OPENAI_API_BASE")
+        if provider == "openrouter":
+            api_key = os.environ.get("OPENROUTER_API_KEY")
+            base_url = base_url or "https://openrouter.ai/api/v1"
+        
+        kwargs = {
+            "model": model_name or ("google/gemini-flash-1.5" if provider == "openrouter" else "gpt-4o"),
+            "openai_api_key": api_key,
+            "openai_api_base": base_url,
+            "temperature": 0.7,
+        }
+        if provider == "openrouter":
+            kwargs["default_headers"] = {
+                "HTTP-Referer": "https://github.com/faultline-chaos",
+                "X-Title": "Faultline Aegis-Breaker",
+            }
+        return ChatOpenAI(**kwargs)
+    
+    logger.error(f"Unknown provider: {provider}")
+    return None
 
 class CampaignState(TypedDict):
     """
@@ -91,10 +143,17 @@ class AegisAgent:
         The main intelligence node. Binds tools to the LLM and generates a response.
         """
         logger.info("Phase: Agent Reasoning")
+        cli_provider = get_cli_provider_name()
+        if cli_provider:
+            prompt = self._build_cli_prompt(state)
+            manager = ProviderManager(target_dir=state.get("target_dir") or ".")
+            response = await asyncio.to_thread(manager.run, cli_provider, prompt)
+            return {"messages": [AIMessage(content=response)]}
+
         llm = build_llm()
         if not llm:
             logger.warning("LLM not configured. Agent returning dummy response.")
-            return {"messages": [AIMessage(content="LLM is not configured. Set OPENROUTER_API_KEY before running campaigns.")]}
+            return {"messages": [AIMessage(content="LLM is not configured. Set FAULTLINE_PROVIDER and the matching API key or CLI login before running campaigns.")]}
 
         # Bind tools to the model
         model_with_tools = llm.bind_tools(FAULTLINE_TOOLS)
@@ -108,6 +167,19 @@ class AegisAgent:
         
         response = await model_with_tools.ainvoke(messages)
         return {"messages": [response]}
+
+    def _build_cli_prompt(self, state: CampaignState) -> str:
+        latest_user_message = state["messages"][-1].content if state.get("messages") else "Begin the campaign."
+        return (
+            f"{SYSTEM_PROMPT}\n\n"
+            "Target Config:\n"
+            f"- Directory: {state.get('target_dir')}\n"
+            f"- URL: {state.get('target_url')}\n"
+            f"- Log File: {state.get('log_file')}\n\n"
+            "Run the investigation from the target directory. Inspect the project, execute safe tests when feasible, "
+            "summarize findings with evidence, and recommend fixes.\n\n"
+            f"Campaign request: {latest_user_message}"
+        )
 
     async def run_campaign(self, target_dir: str, target_url: str, log_file: str, initial_prompt: str = "Begin the chaos campaign against the target."):
         """

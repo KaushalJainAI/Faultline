@@ -11,18 +11,51 @@ class ASTGrapher:
             "files": {},
             "dependencies": []
         }
+        self.module_map = {}
 
     def analyze_project(self):
         """Walks the directory and analyzes each Python file."""
         self.graph = {"files": {}, "dependencies": []}
-        for path in self.root_dir.rglob("*.py"):
+        all_py_files = list(self.root_dir.rglob("*.py"))
+        
+        # Mapping of module names to file paths for internal resolution
+        self.module_map = {}
+        for path in all_py_files:
+            if any(part in SKIPPED_DIRS for part in path.parts):
+                continue
+            rel_path = path.relative_to(self.root_dir)
+            module_name = str(rel_path.with_suffix("")).replace("\\", ".").replace("/", ".")
+            if module_name.endswith(".__init__"):
+                module_name = module_name[:-9]
+            self.module_map[module_name] = str(rel_path)
+
+        for path in all_py_files:
             if any(part in SKIPPED_DIRS for part in path.parts):
                 continue
             
             relative_path = str(path.relative_to(self.root_dir))
-            self.graph["files"][relative_path] = self.analyze_file(path)
+            file_info = self.analyze_file(path)
+            self.graph["files"][relative_path] = file_info
+            
+            # Resolve imports to internal dependencies
+            for imp in file_info["imports"]:
+                target_file = self._resolve_internal_import(imp)
+                if target_file and target_file != relative_path:
+                    edge = (relative_path, target_file)
+                    if edge not in self.graph["dependencies"]:
+                        self.graph["dependencies"].append(edge)
 
         return self.graph
+
+    def _resolve_internal_import(self, import_name):
+        """Attempts to resolve an import string to a local project file."""
+        parts = import_name.split(".")
+        while parts:
+            module = ".".join(parts)
+            if module in self.module_map:
+                return self.module_map[module]
+            parts.pop()
+        return None
 
     def analyze_file(self, file_path):
         """Parses a single file and extracts its structure."""
@@ -116,8 +149,4 @@ class ASTGrapher:
             json.dump(self.graph, f, indent=4)
 
 if __name__ == "__main__":
-    # Example: Analyze Faultline itself
-    # grapher = ASTGrapher(root_dir=".")
-    # grapher.analyze_project()
-    # grapher.save_graph("project_map.json")
     pass

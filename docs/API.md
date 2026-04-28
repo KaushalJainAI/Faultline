@@ -8,7 +8,7 @@ http://localhost:8000/api/v1
 
 ## Start Campaign
 
-Starts a background Aegis-Breaker campaign. The API requires `OPENROUTER_API_KEY`, creates a database campaign record, starts the target process with `start_command`, runs the agent, writes findings/tool runs, generates a Markdown report, and stops the target process when the background task exits.
+Starts a background Aegis-Breaker campaign. The API requires a configured provider, creates a database campaign record, starts the target process with `start_command`, runs the agent, writes findings/tool runs, generates a Markdown report, and stops the target process when the background task exits.
 
 ```http
 POST /campaign/start/
@@ -54,11 +54,11 @@ Success response:
 
 Validation failures return `400 Bad Request` with serializer errors.
 
-If `OPENROUTER_API_KEY` is missing, the endpoint returns:
+If the selected provider is not configured, the endpoint returns:
 
 ```json
 {
-  "error": "OPENROUTER_API_KEY is required to start an autonomous campaign."
+  "error": "OPENROUTER_API_KEY is required when FAULTLINE_PROVIDER=openrouter."
 }
 ```
 

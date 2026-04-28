@@ -1,6 +1,5 @@
 import uuid
 import logging
-import os
 import threading
 from pathlib import Path
 from django.http import JsonResponse
@@ -18,6 +17,7 @@ from campaigns.serializers import (
     ProjectMapRequestSerializer,
 )
 from campaigns.services import run_campaign_pipeline
+from core.provider_config import get_config_status
 from skills.ast_grapher import ASTGrapher
 
 logger = logging.getLogger("CampaignAPI")
@@ -27,9 +27,11 @@ class StartCampaignView(APIView):
     Triggers the Aegis-Breaker LangGraph agent to start a new chaos campaign.
     """
     def post(self, request, *args, **kwargs):
-        if not os.environ.get("OPENROUTER_API_KEY"):
+        target_path = request.data.get("target_path") if hasattr(request.data, "get") else None
+        configured, message = get_config_status(target_path or ".")
+        if not configured:
             return Response(
-                {"error": "OPENROUTER_API_KEY is required to start an autonomous campaign."},
+                {"error": message},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 

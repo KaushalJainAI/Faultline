@@ -3,6 +3,8 @@ djangorestframework
 langgraph
 langchain
 langchain-openai
+langchain-anthropic
+langchain-google-genai
 httpx
 psutil
 watchdog
@@ -14,3 +16,5 @@ torch
 python-dotenv
 pytest
 mcp
+plotly
+pandas

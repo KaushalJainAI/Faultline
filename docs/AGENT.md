@@ -36,7 +36,29 @@ The default LLM client points at OpenRouter through `ChatOpenAI`. Set:
 set OPENROUTER_API_KEY=your_key_here
 ```
 
-If `langchain-openai` or `OPENROUTER_API_KEY` is unavailable, the agent returns a configuration message instead of running a real campaign. The campaign start API also rejects missing `OPENROUTER_API_KEY` before creating a background run.
+Other API providers are selected with `FAULTLINE_PROVIDER=openai`, `anthropic`, or `google` plus the matching API key.
+
+Subscription-backed CLIs are selected with:
+
+```bash
+set FAULTLINE_PROVIDER=claude_cli
+set FAULTLINE_PROVIDER=gemini_cli
+set FAULTLINE_PROVIDER=codex_cli
+```
+
+CLI modes require the matching local CLI to be installed and authenticated. They run the campaign prompt through that CLI, which lets Faultline use subscription allowances where available. API modes keep LangChain tool calling.
+
+CLI provider commands:
+
+```bash
+claude -p "<prompt>"
+gemini -p "<prompt>" --skip-trust
+codex exec "<prompt>" --cd "<target_dir>" --sandbox read-only
+```
+
+If a CLI is not on `PATH`, set `FAULTLINE_CLAUDE_BINARY`, `FAULTLINE_GEMINI_BINARY`, or `FAULTLINE_CODEX_BINARY` to the executable path. Optional extra flags can be supplied with `FAULTLINE_CLAUDE_CLI_ARGS`, `FAULTLINE_GEMINI_CLI_ARGS`, and `FAULTLINE_CODEX_CLI_ARGS`. Codex sandbox mode defaults to `read-only` and can be changed with `FAULTLINE_CODEX_SANDBOX`.
+
+If the selected provider is unavailable, the agent returns a configuration message instead of running a real campaign. The campaign start API also rejects missing provider configuration before creating a background run.
 
 ## Intended Campaign Behavior
 

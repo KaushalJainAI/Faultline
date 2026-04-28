@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.agent import AegisAgent
+from core.provider_config import get_config_status
 
 load_dotenv()
 
@@ -26,8 +27,9 @@ async def main():
 
     args = parser.parse_args()
 
-    if not os.environ.get("OPENROUTER_API_KEY"):
-        print("Error: OPENROUTER_API_KEY is not set. Add it to your .env file or environment.")
+    configured, message = get_config_status(args.target_dir)
+    if not configured:
+        print(f"Error: {message}")
         sys.exit(1)
 
     print("\nStarting Aegis-Breaker campaign...")

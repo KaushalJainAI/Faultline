@@ -11,6 +11,8 @@ from skills.log_correlator import LogCorrelator
 from skills.medic import Medic
 from skills.semantic_indexer import SemanticIndexer
 from skills.qa_engineer import QAEngineer
+from skills.visualizer import Visualizer
+from core.cli_provider import ProviderManager
 
 logger = logging.getLogger("FaultlineTools")
 
@@ -152,6 +154,90 @@ def save_vulnerability_report(report_markdown: str, filename: str = "latest_repo
     except Exception as e:
         return f"Error saving report: {e}"
 
+@tool
+def execute_claude_code_task(task: str, target_dir: str) -> str:
+    """
+    Delegates a complex coding or investigation task to the 'claude' CLI (Claude Code).
+    Use this for high-level refactoring or multi-file architectural changes.
+    """
+    logger.info(f"Tool Call: Delegating to Claude Code: {task}")
+    try:
+        manager = ProviderManager(target_dir=target_dir)
+        return manager.run("claude", task)
+    except Exception as e:
+        return f"Execution error: {e}"
+
+@tool
+def execute_gemini_cli_task(prompt: str, target_dir: str) -> str:
+    """
+    Delegates a reasoning or code analysis task to the 'gemini' CLI.
+    """
+    logger.info(f"Tool Call: Delegating to Gemini CLI: {prompt}")
+    try:
+        manager = ProviderManager(target_dir=target_dir)
+        return manager.run("gemini", prompt)
+    except Exception as e:
+        return f"Execution error: {e}"
+
+@tool
+def generate_dependency_graph(target_dir: str) -> str:
+    """
+    Generates a Mermaid.js dependency graph of the project structure.
+    Saves the result to reports/dependency_graph.md.
+    """
+    logger.info(f"Tool Call: Generating dependency graph for {target_dir}")
+    try:
+        grapher = ASTGrapher(root_dir=target_dir)
+        ast_data = grapher.analyze_project()
+        viz = Visualizer()
+        path = viz.generate_mermaid_dependency_graph(ast_data)
+        return f"Dependency graph generated and saved to {path}"
+    except Exception as e:
+        return f"Error generating dependency graph: {e}"
+
+@tool
+def calculate_project_quality(findings_json: str, tests_passed: int, tests_total: int) -> str:
+    """
+    Calculates a project quality score (0-100) and endpoint risk scores.
+    findings_json: A JSON list of findings.
+    """
+    logger.info("Tool Call: Calculating quality scores")
+    try:
+        findings = json.loads(findings_json)
+        viz = Visualizer()
+        scores = viz.calculate_scores(findings, tests_passed, tests_total)
+        return json.dumps(scores, indent=2)
+    except Exception as e:
+        return f"Error calculating scores: {e}"
+
+@tool
+def generate_campaign_visuals(campaign_id: str, tool_runs_json: str, findings_json: str) -> str:
+    """
+    Generates failure rate charts and vulnerability maps for a campaign.
+    Returns paths to the generated HTML report files.
+    """
+    logger.info(f"Tool Call: Generating visuals for campaign {campaign_id}")
+    try:
+        tool_runs = json.loads(tool_runs_json)
+        findings = json.loads(findings_json)
+        viz = Visualizer()
+        paths = viz.generate_campaign_charts(campaign_id, tool_runs, findings)
+        return json.dumps(paths, indent=2)
+    except Exception as e:
+        return f"Error generating visuals: {e}"
+
+@tool
+def execute_codex_cli_task(task: str, target_dir: str) -> str:
+    """
+    Delegates a coding task to the 'codex' CLI.
+    """
+    logger.info(f"Tool Call: Delegating to Codex CLI: {task}")
+    try:
+        manager = ProviderManager(target_dir=target_dir)
+        return manager.run("codex", task)
+    except Exception as e:
+        return f"Execution error: {e}"
+
 # Expose tools for the agent to bind
 FAULTLINE_TOOLS = [
     analyze_project_structure,
@@ -161,5 +247,11 @@ FAULTLINE_TOOLS = [
     run_functional_test,
     execute_chaos_campaign,
     propose_code_patch,
-    save_vulnerability_report
+    save_vulnerability_report,
+    execute_claude_code_task,
+    execute_gemini_cli_task,
+    execute_codex_cli_task,
+    generate_dependency_graph,
+    calculate_project_quality,
+    generate_campaign_visuals
 ]
