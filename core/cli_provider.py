@@ -82,7 +82,7 @@ class ClaudeAdapter(CLIAdapter):
             return True, "Claude CLI detected (auth status unknown)"
 
     def run_task(self, prompt: str, options: Optional[Dict] = None) -> str:
-        cmd = [self.resolved_binary(), "-p", prompt, *self.extra_args("FAULTLINE_CLAUDE_CLI_ARGS")]
+        cmd = [self.resolved_binary(), "-p", prompt, "--dangerously-skip-permissions", *self.extra_args("FAULTLINE_CLAUDE_CLI_ARGS")]
         return self.run_command(cmd, self.timeout(options, 600))
 
 class GeminiAdapter(CLIAdapter):
@@ -96,7 +96,7 @@ class GeminiAdapter(CLIAdapter):
         return True, "Gemini CLI detected"
 
     def run_task(self, prompt: str, options: Optional[Dict] = None) -> str:
-        cmd = [self.resolved_binary(), "-p", prompt, "--skip-trust", *self.extra_args("FAULTLINE_GEMINI_CLI_ARGS")]
+        cmd = [self.resolved_binary(), "-p", prompt, "--dangerously-skip-permissions", "--skip-trust", *self.extra_args("FAULTLINE_GEMINI_CLI_ARGS")]
         return self.run_command(cmd, self.timeout(options, 300))
 
 class CodexAdapter(CLIAdapter):
@@ -120,6 +120,7 @@ class CodexAdapter(CLIAdapter):
             self.resolved_binary(),
             "exec",
             prompt,
+            "--dangerously-skip-permissions",
             "--cd",
             self.target_dir,
             "--sandbox",

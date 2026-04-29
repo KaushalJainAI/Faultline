@@ -10,6 +10,7 @@ def validate_existing_directory(value):
     return str(path)
 
 class CampaignCreateSerializer(serializers.Serializer):
+    execution_mode = serializers.ChoiceField(choices=["pipeline", "agent", "hybrid"], required=False, default="hybrid")
     target_path = serializers.CharField(required=True)
     target_url = serializers.URLField(required=True)
     start_command = serializers.CharField(required=True)
@@ -46,6 +47,7 @@ class CampaignDetailSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "status",
+            "execution_mode",
             "target_path",
             "target_url",
             "start_command",

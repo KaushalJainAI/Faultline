@@ -8,6 +8,7 @@ The current implementation is intentionally developer-facing: you point it at a 
 
 - `config/`: Django project configuration.
 - `campaigns/`: REST API for starting campaigns and generating project maps.
+- `vault/`: Authentication management system for acquiring and injecting session credentials.
 - `core/`: LangGraph agent orchestration, prompts, and LangChain tool bindings.
 - `skills/`: Reusable capabilities for mapping, testing, attacking, log correlation, patch proposals, and semantic indexing.
 - `scripts/`: Local smoke-test and campaign runner scripts.
@@ -124,11 +125,33 @@ Run the agent directly:
 python scripts/run_campaign.py --target-dir C:/path/to/project --target-url http://127.0.0.1:9000 --log-file C:/path/to/project/server.log
 ```
 
+Run the newer CLI pipeline:
+
+```bash
+python scripts/faultline_cli.py --mode pipeline --target-dir C:/path/to/project
+python scripts/faultline_cli.py --mode agent --target-dir C:/path/to/project --target-url http://127.0.0.1:9000 --log-file C:/path/to/project/server.log
+python scripts/faultline_cli.py --mode hybrid --target-dir C:/path/to/project --target-url http://127.0.0.1:9000 --log-file C:/path/to/project/server.log
+```
+
+Modes:
+
+- `pipeline`: deterministic checks first, no target server required.
+- `agent`: model-led investigation with tools for listing and reading project files.
+- `hybrid`: deterministic baseline first, then agent-led API/chaos investigation.
+
 ## Documentation
 
-- [API Guide](docs/API.md)
-- [Skills Library](docs/SKILLS.md)
-- [Agent Workflow](docs/AGENT.md)
+- [Architecture Guide](docs/ARCHITECTURE.md) - Deep dive into system design and data flow.
+- [Pipeline Vision](docs/VISION.md) - The 7-step architectural roadmap for Faultline.
+- [Tutorial](docs/TUTORIAL.md) - Step-by-step guide to running your first campaign.
+- [Vault Authentication](docs/VAULT.md) - How to configure and use the dynamic authentication system.
+- [Pipeline Mode](docs/PIPELINE.md) - Using the deterministic, non-AI testing pipeline.
+- [LLM Providers](docs/PROVIDERS.md) - Configuring API and local CLI adapters.
+- [MCP Integration](docs/MCP.md) - Using Faultline tools in IDEs like Cursor.
+- [Skills Library](docs/SKILLS.md) - Detailed catalog of testing and analysis tools.
+- [API Guide](docs/API.md) - REST API documentation for the control plane.
+- [Agent Workflow](docs/AGENT.md) - Explanation of the LangGraph execution loop.
+- [Contributing](docs/CONTRIBUTING.md) - How to extend Faultline with new skills.
 
 ## Current State
 
@@ -136,7 +159,10 @@ Implemented:
 
 - Django REST control plane.
 - Database-backed campaign, finding, and tool-run persistence.
+- Dynamic Vault authentication system for static tokens and login endpoints.
 - AST-based Python project mapper.
+- Pipeline-first deterministic scanner for syntax, imports, dependency conflicts, pytest collection, Ruff findings, and dependency failure propagation.
+- Agent-first file listing and bounded file-reading tools.
 - Basic Django/DRF route, view, and serializer hints.
 - LangChain tools and MCP wrappers.
 - Async HTTP attack engine with request ID tracing.

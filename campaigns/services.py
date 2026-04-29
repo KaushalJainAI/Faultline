@@ -8,9 +8,11 @@ from django.utils import timezone
 
 from campaigns.models import Campaign, Finding, ToolRun
 from core.agent import AegisAgent
+from core.pipeline import PipelineRunner
 from core.provider_config import get_config_status
 from core.tools import analyze_project_structure, index_project_documentation
 from skills.medic import Medic
+from vault.services import Authenticator
 
 logger = logging.getLogger("CampaignService")
 
@@ -60,6 +62,25 @@ def _create_error_finding(campaign: Campaign, title: str, summary: str, evidence
     )
 
 
+def _persist_pipeline_findings(campaign: Campaign, pipeline_result: dict) -> dict:
+    deterministic = pipeline_result.get("stages", {}).get("deterministic_checks", {})
+    for item in deterministic.get("findings", []):
+        Finding.objects.create(
+            campaign=campaign,
+            title=item.get("title", "Deterministic finding")[:255],
+            category=item.get("category") if item.get("category") in Finding.Category.values else Finding.Category.RUNTIME,
+            severity=item.get("severity") if item.get("severity") in Finding.Severity.values else Finding.Severity.MEDIUM,
+            status="open",
+            summary=item.get("summary", ""),
+            evidence=item.get("evidence", ""),
+            reproduction_steps="Run `python scripts/faultline_cli.py --mode pipeline --target-dir <target>`.",
+            suggested_fix=item.get("suggested_fix", ""),
+            file_path=item.get("file_path", ""),
+            line_number=item.get("line_number"),
+        )
+    return pipeline_result
+
+
 def generate_campaign_report(campaign: Campaign) -> str:
     campaign.refresh_from_db()
     findings = list(campaign.findings.all())
@@ -74,6 +95,7 @@ def generate_campaign_report(campaign: Campaign) -> str:
         "## Campaign summary",
         "",
         f"- Status: {campaign.status}",
+        f"- Execution mode: {campaign.execution_mode}",
         f"- Target URL: {campaign.target_url}",
         f"- Target path: {campaign.target_path}",
         f"- Created at: {campaign.created_at}",
@@ -175,6 +197,27 @@ def run_campaign_pipeline(campaign_id: str) -> None:
             health_url=campaign.health_url or None,
             target_dir=campaign.target_path,
         )
+
+        target_path_exists = Path(campaign.target_path).exists() and Path(campaign.target_path).is_dir()
+        if campaign.execution_mode in {Campaign.ExecutionMode.PIPELINE, Campaign.ExecutionMode.HYBRID} and target_path_exists:
+            _run_tool(
+                campaign,
+                "pipeline_runner.run",
+                campaign.target_path,
+                lambda: _persist_pipeline_findings(
+                    campaign,
+                    PipelineRunner(campaign.target_path).run(include_semantic=True),
+                ),
+            )
+
+        if campaign.execution_mode == Campaign.ExecutionMode.PIPELINE:
+            if not target_path_exists:
+                raise RuntimeError("Pipeline mode requires target_path to be an existing directory.")
+            campaign.status = Campaign.Status.FAILED if campaign.findings.exists() else Campaign.Status.PASSED
+            campaign.finished_at = timezone.now()
+            campaign.save(update_fields=["status", "finished_at"])
+            return
+
         target_started = _run_tool(campaign, "medic.start_server", campaign.start_command, medic.start_server)
         if not target_started:
             raise RuntimeError("Target server failed to start.")
@@ -194,6 +237,18 @@ def run_campaign_pipeline(campaign_id: str) -> None:
                 lambda: index_project_documentation.invoke({"target_dir": campaign.target_path}),
             )
 
+        session_headers = {}
+        if campaign.auth_flow:
+            _run_tool(
+                campaign,
+                "authenticator.execute_flow",
+                f"Executing AuthFlow {campaign.auth_flow.name}",
+                lambda: None # just for logging
+            )
+            auth_service = Authenticator(campaign.target_url, campaign.auth_flow)
+            auth_result = auth_service.execute_flow()
+            session_headers = auth_result.get("headers", {})
+
         agent = AegisAgent()
         _run_tool(
             campaign,
@@ -204,9 +259,11 @@ def run_campaign_pipeline(campaign_id: str) -> None:
                     target_dir=campaign.target_path,
                     target_url=campaign.target_url,
                     log_file=campaign.log_file,
+                    session_headers=session_headers,
                     initial_prompt=(
                         "Run a Django/DRF quality campaign. Identify endpoints, run at least one functional "
-                        "test when feasible, generate adversarial payloads, execute them, and save a report."
+                        "test when feasible, generate adversarial payloads, execute them, and save a report. "
+                        "Use file-reading tools before writing generated tests or patches."
                     ),
                 )
             ),

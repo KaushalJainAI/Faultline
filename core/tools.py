@@ -6,6 +6,8 @@ from langchain_core.tools import tool
 
 from skills.ast_grapher import ASTGrapher
 from skills.attacker import SiegeEngine
+from skills.deterministic_checker import DeterministicChecker
+from skills.file_reader import ProjectFileReader
 from skills.guardrails import GuardrailValidator
 from skills.log_correlator import LogCorrelator
 from skills.medic import Medic
@@ -15,6 +17,46 @@ from skills.visualizer import Visualizer
 from core.cli_provider import ProviderManager
 
 logger = logging.getLogger("FaultlineTools")
+
+@tool
+def list_project_files(target_dir: str, glob: str = "**/*.py", limit: int = 250) -> str:
+    """
+    Lists project-local files for agent-first investigation.
+    Respects skipped directories such as venv, .git, caches, and node_modules.
+    """
+    logger.info("Tool Call: Listing project files in %s", target_dir)
+    try:
+        reader = ProjectFileReader(target_dir)
+        return json.dumps(reader.list_files(glob=glob, limit=limit), indent=2)
+    except Exception as e:
+        return f"Error listing project files: {e}"
+
+@tool
+def read_project_file(target_dir: str, relative_path: str, start_line: int = 1, max_lines: int = 240) -> str:
+    """
+    Reads a bounded slice of a project-local file for agent-first investigation.
+    Use this before proposing tests, payloads, or patches.
+    """
+    logger.info("Tool Call: Reading project file %s", relative_path)
+    try:
+        reader = ProjectFileReader(target_dir)
+        return json.dumps(reader.read_file(relative_path, start_line, max_lines), indent=2)
+    except Exception as e:
+        return f"Error reading project file: {e}"
+
+@tool
+def run_deterministic_checks(target_dir: str) -> str:
+    """
+    Runs deterministic pre-agent checks: syntax parsing, missing imports,
+    definite division-by-zero hazards, ruff, pip check, pytest collection,
+    and AST dependency root-cause propagation.
+    """
+    logger.info("Tool Call: Running deterministic checks for %s", target_dir)
+    try:
+        checker = DeterministicChecker(target_dir)
+        return json.dumps(checker.run_all(), indent=2)
+    except Exception as e:
+        return f"Error running deterministic checks: {e}"
 
 @tool
 def analyze_project_structure(target_dir: str) -> str:
@@ -87,7 +129,9 @@ async def execute_chaos_campaign(payloads_json: str, target_url: str, log_file: 
         if not isinstance(payloads, list):
             return "Error: payloads_json must be a JSON array."
         
-        engine = SiegeEngine(target_url)
+        from core.context import session_headers_var
+        headers = session_headers_var.get()
+        engine = SiegeEngine(target_url, session_headers=headers)
         correlator = LogCorrelator(log_file)
         
         correlator.start_watching()
@@ -240,6 +284,9 @@ def execute_codex_cli_task(task: str, target_dir: str) -> str:
 
 # Expose tools for the agent to bind
 FAULTLINE_TOOLS = [
+    list_project_files,
+    read_project_file,
+    run_deterministic_checks,
     analyze_project_structure,
     index_project_documentation,
     query_knowledge_base,

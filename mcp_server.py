@@ -19,6 +19,9 @@ except Exception:
 from mcp.server.fastmcp import FastMCP
 from core.tools import (
     analyze_project_structure,
+    list_project_files,
+    read_project_file,
+    run_deterministic_checks,
     run_functional_test,
     propose_code_patch,
     execute_chaos_campaign
@@ -26,6 +29,41 @@ from core.tools import (
 
 logger = logging.getLogger("FaultlineMCP")
 mcp = FastMCP("Faultline-Agent", description="Autonomous QA and Chaos Engineering Testing Platform")
+
+@mcp.tool()
+async def faultline_list_project_files(target_dir: str, glob: str = "**/*.py", limit: int = 250) -> str:
+    """
+    Lists project-local files for agent-first investigation.
+    """
+    try:
+        return list_project_files.invoke({"target_dir": target_dir, "glob": glob, "limit": limit})
+    except Exception as e:
+        return f"Error: {e}"
+
+@mcp.tool()
+async def faultline_read_project_file(target_dir: str, relative_path: str, start_line: int = 1, max_lines: int = 240) -> str:
+    """
+    Reads a bounded slice of a project-local file.
+    """
+    try:
+        return read_project_file.invoke({
+            "target_dir": target_dir,
+            "relative_path": relative_path,
+            "start_line": start_line,
+            "max_lines": max_lines,
+        })
+    except Exception as e:
+        return f"Error: {e}"
+
+@mcp.tool()
+async def faultline_run_deterministic_checks(target_dir: str) -> str:
+    """
+    Runs the pipeline-first deterministic check suite.
+    """
+    try:
+        return run_deterministic_checks.invoke({"target_dir": target_dir})
+    except Exception as e:
+        return f"Error: {e}"
 
 @mcp.tool()
 async def faultline_analyze_project(target_dir: str) -> str:

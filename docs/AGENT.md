@@ -6,19 +6,24 @@ Aegis-Breaker is the LangGraph orchestration layer for Faultline. Its job is to 
 
 The current graph is intentionally simple:
 
-1. `agent`: Calls the configured chat model with campaign context and the Faultline tool list.
-2. `tools`: Executes any requested tool calls.
-3. Loop back to `agent` until the model returns a message without tool calls.
+1. **Authentication**: If an `AuthFlow` is configured, Faultline pre-flights the login endpoint (or reads static tokens) via the Vault and acquires session credentials.
+2. `agent`: Calls the configured chat model with campaign context and the Faultline tool list.
+3. `tools`: Executes any requested tool calls.
+4. Loop back to `agent` until the model returns a message without tool calls.
 
 The model receives:
 
 - Target directory.
 - Target base URL.
 - Target log file.
+- Session credentials (headers/cookies) injected by the Vault.
 - The system prompt from `core/prompts.py`.
 
 ## Available Tools
 
+- `list_project_files`: Lists project files for agent-first exploration.
+- `read_project_file`: Reads specific segments of a target file.
+- `run_deterministic_checks`: Runs syntax, imports, and pipeline linters.
 - `analyze_project_structure`: AST map of Python files, classes, functions, and imports.
 - `index_project_documentation`: Indexes Markdown documentation into FAISS.
 - `query_knowledge_base`: Searches indexed documentation.
@@ -27,6 +32,12 @@ The model receives:
 - `execute_chaos_campaign`: Sends adversarial HTTP payloads and correlates log crashes.
 - `propose_code_patch`: Writes proposed fixes into `.aegis_patches`.
 - `save_vulnerability_report`: Saves Markdown reports into `reports/`.
+- `execute_claude_code_task`: Delegates complex refactoring or multi-file architectural changes to Claude Code.
+- `execute_gemini_cli_task`: Delegates deep reasoning and exploration to the Gemini CLI.
+- `execute_codex_cli_task`: Delegates restricted or coding-focused sandbox tasks to the Codex CLI.
+- `generate_dependency_graph`: Uses the Visualizer to render Mermaid.js structural graphs.
+- `calculate_project_quality`: Uses the Visualizer to calculate endpoint risk and global quality scores.
+- `generate_campaign_visuals`: Uses the Visualizer to create Plotly failure-rate and vulnerability maps.
 
 ## Configuration
 
@@ -64,11 +75,14 @@ If the selected provider is unavailable, the agent returns a configuration messa
 
 A complete campaign should:
 
-1. Discover structure and documentation intent.
-2. Verify expected behavior with generated functional tests.
-3. Generate adversarial payloads from discovered endpoint context.
-4. Execute attacks against the target URL.
-5. Correlate crashes from logs using `X-Aegis-Request-ID`.
-6. Save a report and propose patches when useful.
+1. Authenticate using the Vault (if configured).
+2. Discover structure and documentation intent.
+3. Verify expected behavior with generated functional tests.
+4. Delegate deep analysis to CLI providers if needed.
+5. Generate adversarial payloads from discovered endpoint context.
+6. Execute attacks against the target URL.
+7. Correlate crashes from logs using `X-Aegis-Request-ID`.
+8. Calculate quality scores and generate visual charts.
+9. Save a report and propose patches when useful.
 
 Campaigns now persist status, tool runs, findings, and Markdown report paths in the Django database. Richer endpoint schema extraction remains a planned next step.

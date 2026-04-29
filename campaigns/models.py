@@ -10,8 +10,14 @@ class Campaign(models.Model):
         FAILED = "failed", "Failed"
         ERROR = "error", "Error"
 
+    class ExecutionMode(models.TextChoices):
+        PIPELINE = "pipeline", "Pipeline First"
+        AGENT = "agent", "Agent First"
+        HYBRID = "hybrid", "Hybrid"
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.QUEUED)
+    execution_mode = models.CharField(max_length=20, choices=ExecutionMode.choices, default=ExecutionMode.HYBRID)
     target_path = models.TextField()
     target_url = models.URLField()
     start_command = models.TextField()
@@ -22,6 +28,7 @@ class Campaign(models.Model):
     finished_at = models.DateTimeField(blank=True, null=True)
     error_message = models.TextField(blank=True)
     report_path = models.TextField(blank=True)
+    auth_flow = models.ForeignKey("vault.AuthFlow", on_delete=models.SET_NULL, null=True, blank=True, related_name="campaigns")
 
     class Meta:
         ordering = ["-created_at"]

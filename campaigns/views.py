@@ -45,6 +45,7 @@ class StartCampaignView(APIView):
         if serializer.is_valid():
             payload_data = serializer.validated_data
             campaign = Campaign.objects.create(
+                execution_mode=payload_data.get("execution_mode", Campaign.ExecutionMode.HYBRID),
                 target_path=payload_data["target_path"],
                 target_url=payload_data["target_url"],
                 start_command=payload_data["start_command"],
@@ -59,7 +60,7 @@ class StartCampaignView(APIView):
                 "target": campaign.target_path,
                 "campaign_id": str(campaign.id),
                 "status": campaign.status,
-                "tasks": ["Start target", "Index documentation", "Map structure", "Generate payloads", "Execute chaos run", "Write report"]
+                "tasks": ["Run selected mode", "Map structure", "Index documentation", "Generate/execute tests when agent mode is enabled", "Write report"]
             }
             return Response(CampaignResponseSerializer(response_data).data, status=status.HTTP_202_ACCEPTED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)

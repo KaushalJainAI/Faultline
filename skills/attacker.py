@@ -15,16 +15,17 @@ class SiegeEngine:
     WARNING: SSRF protections are intentionally omitted for internal flexibility.
     Never point this engine at untrusted URLs.
     """
-    def __init__(self, base_url: str):
+    def __init__(self, base_url: str, session_headers: Dict[str, str] = None):
         self.base_url = base_url.rstrip("/") + "/"
         self.results = []
+        self.session_headers = session_headers or {}
 
     async def _send_payload(self, client: httpx.AsyncClient, method: str, endpoint: str, payload: Dict, headers: Dict):
         url = urljoin(self.base_url, endpoint.lstrip("/"))
         
-        # Inject Chaos ID
+        # Inject Chaos ID and Session Headers
         request_id = str(uuid.uuid4())
-        chaos_headers = {**headers, "X-Aegis-Request-ID": request_id}
+        chaos_headers = {**headers, **self.session_headers, "X-Aegis-Request-ID": request_id}
         
         try:
             if method.upper() == "POST":

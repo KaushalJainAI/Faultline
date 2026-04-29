@@ -95,6 +95,7 @@ class CampaignState(TypedDict):
     target_dir: str
     target_url: str
     log_file: str
+    session_headers: dict
 
 class AegisAgent:
     def __init__(self):
@@ -160,8 +161,11 @@ class AegisAgent:
         model_with_tools = llm.bind_tools(FAULTLINE_TOOLS)
         
         # Add dynamic system context
+        session_headers = state.get('session_headers', {})
+        header_str = "\n- Session Headers: " + str(session_headers) if session_headers else ""
+        
         context_msg = SystemMessage(
-            content=f"{SYSTEM_PROMPT}\n\nTarget Config:\n- Directory: {state.get('target_dir')}\n- URL: {state.get('target_url')}\n- Log File: {state.get('log_file')}\n\nYou must aggressively investigate the structure, validate attacks, and fire them."
+            content=f"{SYSTEM_PROMPT}\n\nTarget Config:\n- Directory: {state.get('target_dir')}\n- URL: {state.get('target_url')}\n- Log File: {state.get('log_file')}{header_str}\n\nYou must aggressively investigate the structure, validate attacks, and fire them. If writing functional tests, include the Session Headers in your requests to bypass authentication."
         )
         
         messages = [context_msg] + state["messages"]
@@ -182,15 +186,18 @@ class AegisAgent:
             f"Campaign request: {latest_user_message}"
         )
 
-    async def run_campaign(self, target_dir: str, target_url: str, log_file: str, initial_prompt: str = "Begin the chaos campaign against the target."):
+    async def run_campaign(self, target_dir: str, target_url: str, log_file: str, session_headers: dict = None, initial_prompt: str = "Begin the chaos campaign against the target."):
         """
         Entry point to start the campaign stream.
         """
+        from core.context import session_headers_var
+        session_headers_var.set(session_headers or {})
         initial_state = {
             "messages": [HumanMessage(content=initial_prompt)],
             "target_dir": target_dir,
             "target_url": target_url,
             "log_file": log_file,
+            "session_headers": session_headers or {},
         }
         
         async for event in self.app.astream(initial_state):

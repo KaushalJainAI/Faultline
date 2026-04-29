@@ -22,7 +22,8 @@ Request:
   "target_url": "http://127.0.0.1:9000",
   "start_command": "python manage.py runserver 9000",
   "health_url": "http://127.0.0.1:9000/health/",
-  "log_file": "server.log"
+  "log_file": "server.log",
+  "auth_flow": "123e4567-e89b-12d3-a456-426614174000"
 }
 ```
 
@@ -33,6 +34,7 @@ Fields:
 - `start_command`: Command used by the Medic to start the target application from `target_path`.
 - `health_url`: Optional URL used by the Medic for health checks.
 - `log_file`: Optional log file path watched during chaos execution. Defaults to `server.log`.
+- `auth_flow`: Optional UUID of a Vault AuthFlow to execute before testing to acquire session credentials.
 
 Success response:
 
@@ -144,3 +146,48 @@ Success response:
 ```
 
 The mapper skips generated caches, virtual environments, Git metadata, and `.aegis_patches`. For Django/DRF projects, it also includes basic route, view, and serializer hints when simple `path(...)` or `router.register(...)` calls are discoverable.
+
+## Vault Authentication Flows
+
+Manages configurations for acquiring and injecting session credentials.
+
+### List AuthFlows
+
+```http
+GET /vault/auth-flows/
+```
+
+### Create AuthFlow
+
+```http
+POST /vault/auth-flows/
+```
+
+Request (Static Token Example):
+
+```json
+{
+  "name": "My API Key",
+  "auth_type": "static",
+  "auth_payload": "secret-key",
+  "injection_type": "header",
+  "injection_key": "X-API-Key",
+  "injection_format": "{token}"
+}
+```
+
+Request (Login Endpoint Example):
+
+```json
+{
+  "name": "User Login",
+  "auth_type": "login",
+  "auth_url": "/api/login",
+  "auth_method": "POST",
+  "auth_payload": {"username": "admin", "password": "password"},
+  "token_extraction_path": "access_token",
+  "injection_type": "header",
+  "injection_key": "Authorization",
+  "injection_format": "Bearer {token}"
+}
+```
