@@ -62,6 +62,7 @@ class Finding(models.Model):
     suggested_fix = models.TextField(blank=True)
     file_path = models.TextField(blank=True)
     line_number = models.PositiveIntegerField(blank=True, null=True)
+    vision_step = models.PositiveIntegerField(blank=True, null=True, help_text="Maps to the 1-7 step Vision pipeline")
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -86,6 +87,7 @@ class ToolRun(models.Model):
     error_message = models.TextField(blank=True)
     started_at = models.DateTimeField(auto_now_add=True)
     finished_at = models.DateTimeField(blank=True, null=True)
+    vision_step = models.PositiveIntegerField(blank=True, null=True)
 
     class Meta:
         ordering = ["started_at"]

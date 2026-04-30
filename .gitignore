@@ -35,6 +35,9 @@ MANIFEST
 pip-log.txt
 pip-delete-this-directory.txt
 
+# Local ML Models
+models/
+
 # Unit test / coverage reports
 htmlcov/
 .tox/

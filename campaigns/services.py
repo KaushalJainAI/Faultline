@@ -48,7 +48,7 @@ def _target_has_docs(target_path: str) -> bool:
     return any(Path(target_path).rglob("*.md"))
 
 
-def _create_error_finding(campaign: Campaign, title: str, summary: str, evidence: str = "") -> Finding:
+def _create_error_finding(campaign: Campaign, title: str, summary: str, evidence: str = "", vision_step: int = None) -> Finding:
     return Finding.objects.create(
         campaign=campaign,
         title=title,
@@ -59,16 +59,20 @@ def _create_error_finding(campaign: Campaign, title: str, summary: str, evidence
         evidence=evidence,
         reproduction_steps="Run the campaign again with the same target configuration.",
         suggested_fix="Inspect the campaign error and target logs, then fix the failing setup or runtime issue.",
+        vision_step=vision_step,
     )
 
 
 def _persist_pipeline_findings(campaign: Campaign, pipeline_result: dict) -> dict:
     deterministic = pipeline_result.get("stages", {}).get("deterministic_checks", {})
     for item in deterministic.get("findings", []):
+        cat = item.get("category")
+        vision_step = 1 if cat == "syntax" else 2
+
         Finding.objects.create(
             campaign=campaign,
             title=item.get("title", "Deterministic finding")[:255],
-            category=item.get("category") if item.get("category") in Finding.Category.values else Finding.Category.RUNTIME,
+            category=cat if cat in Finding.Category.values else Finding.Category.RUNTIME,
             severity=item.get("severity") if item.get("severity") in Finding.Severity.values else Finding.Severity.MEDIUM,
             status="open",
             summary=item.get("summary", ""),
@@ -77,9 +81,20 @@ def _persist_pipeline_findings(campaign: Campaign, pipeline_result: dict) -> dic
             suggested_fix=item.get("suggested_fix", ""),
             file_path=item.get("file_path", ""),
             line_number=item.get("line_number"),
+            vision_step=vision_step,
         )
     return pipeline_result
 
+
+VISION_STEPS = {
+    1: "Step 1: Syntax & Hardcoded Runtime Checks",
+    2: "Step 2: Deterministic & Dependency Checks",
+    3: "Step 3: AST Dependency Failure Analysis",
+    4: "Step 4: Agentic API Testing & DB Log Analysis",
+    5: "Step 5: Semantic Intent vs. Implementation",
+    6: "Step 6: Production Readiness Profiling",
+    7: "Step 7: Cyber Security Chaos Engineering",
+}
 
 def generate_campaign_report(campaign: Campaign) -> str:
     campaign.refresh_from_db()
@@ -121,51 +136,64 @@ def generate_campaign_report(campaign: Campaign) -> str:
     )
 
     if tool_runs:
-        lines.extend(["| Tool | Status | Started | Finished |", "| --- | --- | --- | --- |"])
+        lines.extend(["| Step | Tool | Status | Started | Finished |", "| --- | --- | --- | --- | --- |"])
         for run in tool_runs:
-            lines.append(f"| {run.tool_name} | {run.status} | {run.started_at} | {run.finished_at or ''} |")
+            step_str = str(run.vision_step) if run.vision_step else "Uncategorized"
+            lines.append(f"| {step_str} | {run.tool_name} | {run.status} | {run.started_at} | {run.finished_at or ''} |")
     else:
         lines.append("No tools were recorded.")
 
-    lines.extend(["", "## Findings table", ""])
-    if findings:
-        lines.extend(["| Severity | Category | Title | Status |", "| --- | --- | --- | --- |"])
-        for finding in findings:
-            lines.append(f"| {finding.severity} | {finding.category} | {finding.title} | {finding.status} |")
-    else:
+    lines.extend(["", "## Findings by Vision Step", ""])
+    
+    if not findings:
         lines.append("No findings were recorded.")
-
-    lines.extend(["", "## Detailed findings", ""])
-    for finding in findings:
-        lines.extend(
-            [
-                f"### {finding.title}",
-                "",
-                f"- Severity: {finding.severity}",
-                f"- Category: {finding.category}",
-                f"- Status: {finding.status}",
-                f"- Location: {finding.file_path or 'unknown'}{':' + str(finding.line_number) if finding.line_number else ''}",
-                "",
-                "#### Summary",
-                "",
-                finding.summary or "No summary provided.",
-                "",
-                "#### Reproduction steps",
-                "",
-                finding.reproduction_steps or "No reproduction steps recorded.",
-                "",
-                "#### Raw crash/log evidence",
-                "",
-                "```text",
-                finding.evidence or "No raw evidence recorded.",
-                "```",
-                "",
-                "#### Suggested next fixes",
-                "",
-                finding.suggested_fix or "No suggested fix recorded.",
-                "",
-            ]
-        )
+    
+    # Group findings by vision_step
+    from collections import defaultdict
+    findings_by_step = defaultdict(list)
+    for f in findings:
+        findings_by_step[f.vision_step or 0].append(f)
+        
+    for step in sorted(findings_by_step.keys()):
+        step_title = VISION_STEPS.get(step, "Uncategorized Findings")
+        lines.extend([f"### {step_title}", ""])
+        lines.extend(["| Severity | Category | Title | Status |", "| --- | --- | --- | --- |"])
+        for finding in findings_by_step[step]:
+            lines.append(f"| {finding.severity} | {finding.category} | {finding.title} | {finding.status} |")
+        lines.append("")
+        
+        lines.append("#### Detailed Evidence")
+        lines.append("")
+        for finding in findings_by_step[step]:
+            lines.extend(
+                [
+                    f"##### {finding.title}",
+                    "",
+                    f"- Severity: {finding.severity}",
+                    f"- Category: {finding.category}",
+                    f"- Status: {finding.status}",
+                    f"- Location: {finding.file_path or 'unknown'}{':' + str(finding.line_number) if finding.line_number else ''}",
+                    "",
+                    "**Summary**",
+                    "",
+                    finding.summary or "No summary provided.",
+                    "",
+                    "**Reproduction steps**",
+                    "",
+                    finding.reproduction_steps or "No reproduction steps recorded.",
+                    "",
+                    "**Raw crash/log evidence**",
+                    "",
+                    "```text",
+                    finding.evidence or "No raw evidence recorded.",
+                    "```",
+                    "",
+                    "**Suggested next fixes**",
+                    "",
+                    finding.suggested_fix or "No suggested fix recorded.",
+                    "",
+                ]
+            )
 
     report_path.write_text("\n".join(lines), encoding="utf-8")
     campaign.report_path = str(report_path)
@@ -239,14 +267,13 @@ def run_campaign_pipeline(campaign_id: str) -> None:
 
         session_headers = {}
         if campaign.auth_flow:
-            _run_tool(
+            auth_service = Authenticator(campaign.target_url, campaign.auth_flow)
+            auth_result = _run_tool(
                 campaign,
                 "authenticator.execute_flow",
                 f"Executing AuthFlow {campaign.auth_flow.name}",
-                lambda: None # just for logging
+                auth_service.execute_flow,
             )
-            auth_service = Authenticator(campaign.target_url, campaign.auth_flow)
-            auth_result = auth_service.execute_flow()
             session_headers = auth_result.get("headers", {})
 
         agent = AegisAgent()
@@ -261,10 +288,13 @@ def run_campaign_pipeline(campaign_id: str) -> None:
                     log_file=campaign.log_file,
                     session_headers=session_headers,
                     initial_prompt=(
-                        "Run a Django/DRF quality campaign. Identify endpoints, run at least one functional "
-                        "test when feasible, generate adversarial payloads, execute them, and save a report. "
-                        "Use file-reading tools before writing generated tests or patches."
+                        "Run a Django/DRF quality campaign. Identify endpoints and components. "
+                        "Read `docs/TESTING_GUIDE.md`. To minimize output tokens, copy the relevant boilerplate "
+                        "from `agent_assets/test_boilerplates/`, edit it in-place to fit the discovered endpoints or models, "
+                        "and save the resulting script in the `reports/testcases/` directory. "
+                        "Verbalize your step-by-step reasoning clearly so human reviewers can trace your logic in the logs."
                     ),
+                    campaign_id=str(campaign.id)
                 )
             ),
         )

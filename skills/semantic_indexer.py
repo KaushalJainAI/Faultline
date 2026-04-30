@@ -6,19 +6,18 @@ except ImportError:
 import numpy as np
 import logging
 import pickle
-import os
-import asyncio
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 logger = logging.getLogger("SemanticIndexer")
 
 EMBEDDING_DIM = 1024
 EMBEDDING_MODEL = 'Qwen/Qwen3-Embedding-0.6B'
+LOCAL_MODEL_DIR = Path("./models/qwen_embedding")
 
 class QwenEmbedder:
     """
-    Wraps Qwen3-Embedding-0.6B with PyTorch dynamic int8 quantization on CPU.
+    Wraps Qwen3-Embedding-0.6B with local caching support.
     """
     def __init__(self):
         self._model = None
@@ -32,11 +31,22 @@ class QwenEmbedder:
             import torch
             from transformers import AutoTokenizer, AutoModel
             
-            logger.info(f"[Embedder] Loading {EMBEDDING_MODEL} | device=cpu | quant=int8")
-            self._tokenizer = AutoTokenizer.from_pretrained(EMBEDDING_MODEL, trust_remote_code=True)
-            model = AutoModel.from_pretrained(EMBEDDING_MODEL, trust_remote_code=True)
-            # FIXED: Use torch.ao.quantization for PyTorch >= 2.0
-            self._model = torch.ao.quantization.quantize_dynamic(model, {torch.nn.Linear}, dtype=torch.qint8)
+            # Check if we have a local cache
+            if LOCAL_MODEL_DIR.exists():
+                logger.info(f"[Embedder] Loading {EMBEDDING_MODEL} from local cache: {LOCAL_MODEL_DIR}")
+                self._tokenizer = AutoTokenizer.from_pretrained(str(LOCAL_MODEL_DIR), trust_remote_code=True)
+                self._model = AutoModel.from_pretrained(str(LOCAL_MODEL_DIR), trust_remote_code=True)
+            else:
+                logger.info(f"[Embedder] Downloading {EMBEDDING_MODEL} from HuggingFace...")
+                self._tokenizer = AutoTokenizer.from_pretrained(EMBEDDING_MODEL, trust_remote_code=True)
+                self._model = AutoModel.from_pretrained(EMBEDDING_MODEL, trust_remote_code=True)
+                
+                # Save locally for next time
+                logger.info(f"[Embedder] Saving model to local cache: {LOCAL_MODEL_DIR}")
+                LOCAL_MODEL_DIR.mkdir(parents=True, exist_ok=True)
+                self._tokenizer.save_pretrained(str(LOCAL_MODEL_DIR))
+                self._model.save_pretrained(str(LOCAL_MODEL_DIR))
+
             self._model.eval()
             self._initialized = True
         except ImportError:
@@ -54,7 +64,8 @@ class QwenEmbedder:
         return vec / norm if norm > 0 else vec
 
     def encode(self, texts: List[str], batch_size: int = 32) -> List[np.ndarray]:
-        if not self._initialized: self._initialize()
+        if not self._initialized:
+            self._initialize()
         import torch
         all_vecs: List[np.ndarray] = []
         for start in range(0, len(texts), batch_size):
@@ -97,18 +108,21 @@ class SemanticIndexer:
             self.metadata = []
 
     def index_text(self, text: str, meta: Dict[str, Any]):
-        if not self.index: return
+        if not self.index:
+            return
         vecs = self.embedder.encode([text])
         self.index.add(np.array(vecs).astype('float32'))
         self.metadata.append({"content": text, "meta": meta})
         self._save()
 
     def index_project_docs(self, root_dir: str):
-        if not self.index: return
+        if not self.index:
+            return
         root = Path(root_dir)
         texts, metas = [], []
         for path in root.rglob("*.md"):
-            if "venv" in str(path): continue
+            if "venv" in str(path):
+                continue
             with open(path, "r", encoding="utf-8") as f:
                 content = f.read()
                 texts.append(content)
@@ -121,7 +135,8 @@ class SemanticIndexer:
             self._save()
 
     def query(self, query_text: str, n_results: int = 3) -> List[Dict]:
-        if not self.index: return []
+        if not self.index:
+            return []
         vecs = self.embedder.encode([query_text])
         distances, indices = self.index.search(np.array(vecs).astype('float32'), n_results)
         results = []
@@ -133,7 +148,8 @@ class SemanticIndexer:
         return results
 
     def _save(self):
-        if not self.index: return
+        if not self.index:
+            return
         faiss.write_index(self.index, str(self.index_file))
         with open(self.metadata_file, "wb") as f:
             pickle.dump(self.metadata, f)

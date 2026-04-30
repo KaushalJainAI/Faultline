@@ -2,11 +2,9 @@ import subprocess
 import time
 import psutil
 import os
-import signal
 import httpx
 import logging
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("Medic")
 
 class Medic:
@@ -116,8 +114,3 @@ class Medic:
                 logger.error("Server health check failed!")
                 self.resurrect()
             time.sleep(interval)
-
-if __name__ == "__main__":
-    # Example usage (Test with a dummy server or AIAAS)
-    # medic = Medic(start_command="python manage.py runserver", health_url="http://127.0.0.1:8000/health/")
-    pass

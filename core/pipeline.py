@@ -18,16 +18,45 @@ class PipelineRunner:
         self.reports_dir = Path(reports_dir)
         self.reports_dir.mkdir(parents=True, exist_ok=True)
 
-    def run(self, include_semantic: bool = True) -> Dict:
+    def run(self, include_semantic: bool = True, renderer=None) -> Dict:
+        if renderer:
+            renderer.show_pipeline_step("Deterministic Checks", "running")
         deterministic = DeterministicChecker(self.target_dir).run_all()
-        structure = json.loads(analyze_project_structure.invoke(self.target_dir))
+        if renderer:
+            count = deterministic.get("summary", {}).get("total_findings", 0)
+            renderer.show_pipeline_step(
+                "Deterministic Checks", "done", detail=f"{count} finding(s)"
+            )
+            renderer.show_pipeline_step("AST Dependency Graph", "running")
+
+        try:
+            structure = json.loads(analyze_project_structure.invoke(self.target_dir))
+        except Exception:
+            structure = {"files": {}, "dependencies": []}
+
+        if renderer:
+            file_count = len(structure.get("files", {}))
+            dep_count = len(structure.get("dependencies", []))
+            renderer.show_pipeline_step(
+                "AST Dependency Graph", "done",
+                detail=f"{file_count} files, {dep_count} dependencies"
+            )
 
         semantic = {"status": "skipped"}
         if include_semantic and any(Path(self.target_dir).rglob("*.md")):
+            if renderer:
+                renderer.show_pipeline_step("Semantic Indexing", "running")
             semantic = {
                 "status": "completed",
                 "result": index_project_documentation.invoke({"target_dir": self.target_dir}),
             }
+            if renderer:
+                renderer.show_pipeline_step("Semantic Indexing", "done")
+        elif renderer:
+            renderer.show_pipeline_step(
+                "Semantic Indexing", "skipped",
+                detail="no markdown docs found" if include_semantic else "disabled"
+            )
 
         report = {
             "mode": "pipeline-first",

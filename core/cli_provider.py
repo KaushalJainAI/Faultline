@@ -45,6 +45,8 @@ class CLIAdapter:
                 cwd=self.target_dir,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=timeout,
             )
             if result.returncode != 0:
@@ -57,6 +59,8 @@ class CLIAdapter:
                 cwd=self.target_dir,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=timeout,
             )
             if result.returncode != 0:

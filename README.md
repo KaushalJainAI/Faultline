@@ -2,7 +2,19 @@
 
 Faultline is an early-stage control plane for AI-assisted QA and chaos engineering. It combines static project mapping, documentation indexing, functional test generation, adversarial HTTP payload execution, log correlation, and proposed patch generation.
 
-The current implementation is intentionally developer-facing: you point it at a target project, start or connect to the target application, and let the Aegis-Breaker agent inspect, test, attack, and summarize what it finds.
+The primary way to use Faultline is the **interactive CLI** — `python faultline.py` — which streams agent reasoning, tool calls, and findings to your terminal in real time, and pauses to ask for credentials or permission when the agent needs them. A Django REST control plane is also available for headless / CI use.
+
+## Interactive CLI (recommended)
+
+```bash
+# Run with prompts for missing args
+python faultline.py
+
+# Or specify everything
+python faultline.py --target-dir /path/to/project --target-url http://localhost:8000 --mode hybrid
+```
+
+You see the agent thinking, every tool call and result, every file it writes, and a yellow panel any time it needs you to approve a destructive action or supply a credential. See [docs/CLI.md](docs/CLI.md) for the full reference.
 
 ## Project Layout
 
@@ -113,23 +125,25 @@ Without a configured API key or authenticated CLI, lower-level tools and project
 
 ## Useful Commands
 
+Run the interactive CLI (preferred):
+
+```bash
+python faultline.py                                                              # interactive prompts
+python faultline.py --target-dir C:/path/to/project --mode pipeline              # static checks only
+python faultline.py --target-dir C:/path/to/project --target-url http://127.0.0.1:9000 --mode hybrid
+python faultline.py --target-dir C:/path/to/project --target-url http://127.0.0.1:9000 --mode hybrid --no-hitl   # unattended
+```
+
 Run the tool smoke test:
 
 ```bash
 python scripts/test_tools.py
 ```
 
-Run the agent directly:
+Legacy non-interactive scripts (still supported):
 
 ```bash
 python scripts/run_campaign.py --target-dir C:/path/to/project --target-url http://127.0.0.1:9000 --log-file C:/path/to/project/server.log
-```
-
-Run the newer CLI pipeline:
-
-```bash
-python scripts/faultline_cli.py --mode pipeline --target-dir C:/path/to/project
-python scripts/faultline_cli.py --mode agent --target-dir C:/path/to/project --target-url http://127.0.0.1:9000 --log-file C:/path/to/project/server.log
 python scripts/faultline_cli.py --mode hybrid --target-dir C:/path/to/project --target-url http://127.0.0.1:9000 --log-file C:/path/to/project/server.log
 ```
 
@@ -141,6 +155,7 @@ Modes:
 
 ## Documentation
 
+- [Interactive CLI](docs/CLI.md) - The `faultline.py` interactive agent with HITL prompts and live streaming.
 - [Architecture Guide](docs/ARCHITECTURE.md) - Deep dive into system design and data flow.
 - [Pipeline Vision](docs/VISION.md) - The 7-step architectural roadmap for Faultline.
 - [Tutorial](docs/TUTORIAL.md) - Step-by-step guide to running your first campaign.
@@ -151,15 +166,19 @@ Modes:
 - [Skills Library](docs/SKILLS.md) - Detailed catalog of testing and analysis tools.
 - [API Guide](docs/API.md) - REST API documentation for the control plane.
 - [Agent Workflow](docs/AGENT.md) - Explanation of the LangGraph execution loop.
+- [Testing Guide](docs/TESTING_GUIDE.md) - Agentic boilerplate testing approach and step-by-step debugging.
 - [Contributing](docs/CONTRIBUTING.md) - How to extend Faultline with new skills.
 
 ## Current State
 
 Implemented:
 
+- Interactive CLI (`faultline.py`) with rich live streaming, HITL credential and permission prompts, and a `request_user_input` tool the agent can call mid-campaign.
 - Django REST control plane.
 - Database-backed campaign, finding, and tool-run persistence.
 - Dynamic Vault authentication system for static tokens and login endpoints.
+- Cost-optimized agent boilerplate copying paradigm.
+- Step-by-step agent debug streaming into `reports/campaign_<id>_agent.log`.
 - AST-based Python project mapper.
 - Pipeline-first deterministic scanner for syntax, imports, dependency conflicts, pytest collection, Ruff findings, and dependency failure propagation.
 - Agent-first file listing and bounded file-reading tools.

@@ -227,8 +227,8 @@ class CampaignAPITests(TestCase):
         self.assertIn("## Campaign summary", content)
         self.assertIn("## Target configuration", content)
         self.assertIn("## Tools executed", content)
-        self.assertIn("## Findings table", content)
-        self.assertIn("## Detailed findings", content)
+        self.assertIn("## Findings by Vision Step", content)
+        self.assertIn("#### Detailed Evidence", content)
         Path(report_path).unlink(missing_ok=True)
 
 
@@ -242,7 +242,7 @@ class SkillTests(TestCase):
         output = ClaudeAdapter(target_dir=".").run_task("hello")
 
         self.assertEqual(output, "ok")
-        self.assertEqual(subprocess_run.call_args.args[0], ["claude", "-p", "hello"])
+        self.assertEqual(subprocess_run.call_args.args[0], ["claude", "-p", "hello", "--dangerously-skip-permissions"])
 
     @patch.dict("os.environ", {"FAULTLINE_CLAUDE_BINARY": "C:\\Tools\\claude.cmd"})
     @patch("core.cli_provider.subprocess.run")
@@ -254,7 +254,7 @@ class SkillTests(TestCase):
         output = ClaudeAdapter(target_dir=".").run_task("hello")
 
         self.assertEqual(output, "ok")
-        self.assertEqual(subprocess_run.call_args.args[0], ["C:\\Tools\\claude.cmd", "-p", "hello"])
+        self.assertEqual(subprocess_run.call_args.args[0], ["C:\\Tools\\claude.cmd", "-p", "hello", "--dangerously-skip-permissions"])
 
     @patch.dict("os.environ", {"FAULTLINE_CLAUDE_BINARY": "C:\\Tools\\claude.cmd"})
     @patch("core.cli_provider.shutil.which")
@@ -274,7 +274,7 @@ class SkillTests(TestCase):
         output = GeminiAdapter(target_dir=".").run_task("hello")
 
         self.assertEqual(output, "ok")
-        self.assertEqual(subprocess_run.call_args.args[0], ["gemini", "-p", "hello", "--skip-trust"])
+        self.assertEqual(subprocess_run.call_args.args[0], ["gemini", "-p", "hello", "--dangerously-skip-permissions", "--skip-trust"])
 
     @patch("core.cli_provider.subprocess.run")
     def test_codex_adapter_uses_exec_prompt_mode(self, subprocess_run):
@@ -287,7 +287,7 @@ class SkillTests(TestCase):
         self.assertEqual(output, "ok")
         self.assertEqual(
             subprocess_run.call_args.args[0],
-            ["codex", "exec", "hello", "--cd", ".", "--sandbox", "read-only"],
+            ["codex", "exec", "hello", "--dangerously-skip-permissions", "--cd", ".", "--sandbox", "read-only"],
         )
 
     @patch.dict("os.environ", {"FAULTLINE_CODEX_SANDBOX": "workspace-write", "FAULTLINE_CODEX_CLI_ARGS": "--skip-git-repo-check"})
@@ -302,7 +302,7 @@ class SkillTests(TestCase):
         self.assertEqual(output, "ok")
         self.assertEqual(
             subprocess_run.call_args.args[0],
-            ["codex", "exec", "hello", "--cd", ".", "--sandbox", "workspace-write", "--skip-git-repo-check"],
+            ["codex", "exec", "hello", "--dangerously-skip-permissions", "--cd", ".", "--sandbox", "workspace-write", "--skip-git-repo-check"],
         )
 
     @patch("core.cli_provider.ProviderManager.get_status")

@@ -38,7 +38,7 @@ class ASTGrapher:
             self.graph["files"][relative_path] = file_info
             
             # Resolve imports to internal dependencies
-            for imp in file_info["imports"]:
+            for imp in file_info.get("imports", []):
                 target_file = self._resolve_internal_import(imp)
                 if target_file and target_file != relative_path:
                     edge = (relative_path, target_file)
@@ -147,6 +147,3 @@ class ASTGrapher:
         """Saves the graph to a JSON file."""
         with open(output_path, "w") as f:
             json.dump(self.graph, f, indent=4)
-
-if __name__ == "__main__":
-    pass

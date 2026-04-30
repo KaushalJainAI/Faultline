@@ -1,7 +1,6 @@
 import json
 import logging
 import asyncio
-from typing import List, Dict, Any
 from langchain_core.tools import tool
 
 from skills.ast_grapher import ASTGrapher
@@ -10,7 +9,6 @@ from skills.deterministic_checker import DeterministicChecker
 from skills.file_reader import ProjectFileReader
 from skills.guardrails import GuardrailValidator
 from skills.log_correlator import LogCorrelator
-from skills.medic import Medic
 from skills.semantic_indexer import SemanticIndexer
 from skills.qa_engineer import QAEngineer
 from skills.visualizer import Visualizer
@@ -108,7 +106,7 @@ def validate_python_code(code_string: str, target_dir: str) -> str:
     hallucinated modules, and basic syntax errors.
     Returns 'Valid' or an error message.
     """
-    logger.info(f"Tool Call: Validating generated Python code")
+    logger.info("Tool Call: Validating generated Python code")
     try:
         validator = GuardrailValidator(target_dir=target_dir)
         is_valid, msg = validator.validate_code(code_string)
@@ -125,10 +123,21 @@ async def execute_chaos_campaign(payloads_json: str, target_url: str, log_file: 
     """
     logger.info(f"Tool Call: Executing Chaos Campaign against {target_url}")
     try:
+        from core.context import chaos_vetoed_var
+        if chaos_vetoed_var.get():
+            chaos_vetoed_var.set(False)  # one-shot veto, reset for next call
+            return json.dumps({
+                "status": "vetoed_by_operator",
+                "total_executed": 0,
+                "total_crashes_found": 0,
+                "crash_details": [],
+                "message": "Human operator denied permission for this chaos campaign."
+            }, indent=2)
+
         payloads = json.loads(payloads_json)
         if not isinstance(payloads, list):
             return "Error: payloads_json must be a JSON array."
-        
+
         from core.context import session_headers_var
         headers = session_headers_var.get()
         engine = SiegeEngine(target_url, session_headers=headers)
@@ -282,8 +291,83 @@ def execute_codex_cli_task(task: str, target_dir: str) -> str:
     except Exception as e:
         return f"Execution error: {e}"
 
+@tool
+def record_finding(
+    campaign_id: str,
+    vision_step: int,
+    title: str,
+    category: str,
+    severity: str,
+    summary: str,
+    evidence: str = "",
+    reproduction_steps: str = "",
+    suggested_fix: str = "",
+    file_path: str = "",
+    line_number: int = None
+) -> str:
+    """
+    Records a finding discovered by an AI agent during a campaign explicitly tagged with a vision_step (1-7).
+    Use this to persist identified vulnerabilities or issues into the final campaign report.
+    """
+    logger.info(f"Tool Call: Recording finding '{title}' for step {vision_step}")
+    try:
+        from campaigns.models import Campaign, Finding
+        campaign = Campaign.objects.get(id=campaign_id)
+        
+        # Ensure category and severity map safely
+        cat = category if category in Finding.Category.values else Finding.Category.RUNTIME
+        sev = severity if severity in Finding.Severity.values else Finding.Severity.MEDIUM
+        
+        Finding.objects.create(
+            campaign=campaign,
+            title=title[:255],
+            category=cat,
+            severity=sev,
+            status="open",
+            summary=summary,
+            evidence=evidence,
+            reproduction_steps=reproduction_steps,
+            suggested_fix=suggested_fix,
+            file_path=file_path,
+            line_number=line_number,
+            vision_step=vision_step,
+        )
+        return f"Successfully recorded finding '{title}' for vision step {vision_step}."
+    except Exception as e:
+        return f"Failed to record finding: {e}"
+
+@tool
+def request_user_input(question: str, input_type: str = "text") -> str:
+    """
+    Pause and ask the human operator for input during the campaign.
+
+    Use this when you encounter an authentication challenge, missing API key,
+    ambiguous configuration, or any decision that requires a human in the loop.
+
+    input_type:
+      - "credential": prompts for a sensitive value with masked input (passwords, API keys, tokens)
+      - "text": prompts for a plain string (usernames, URLs, free-form clarification)
+
+    Returns the value the user typed. Returns an empty string if HITL mode is
+    not enabled (headless execution); detect this and either skip the action
+    or report a configuration error in your finding.
+    """
+    logger.info("Tool Call: request_user_input — %s (type=%s)", question, input_type)
+    try:
+        from core.hitl import hitl
+        sensitive = (input_type or "text").lower() == "credential"
+        return hitl.request_credential(
+            name=question,
+            hint="The value will be returned to the agent.",
+            sensitive=sensitive,
+        )
+    except Exception as exc:
+        return f"HITL request failed: {exc}"
+
+
 # Expose tools for the agent to bind
 FAULTLINE_TOOLS = [
+    record_finding,
     list_project_files,
     read_project_file,
     run_deterministic_checks,
@@ -300,5 +384,6 @@ FAULTLINE_TOOLS = [
     execute_codex_cli_task,
     generate_dependency_graph,
     calculate_project_quality,
-    generate_campaign_visuals
+    generate_campaign_visuals,
+    request_user_input,
 ]

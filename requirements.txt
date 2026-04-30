@@ -11,9 +11,11 @@ watchdog
 ruff
 python-dotenv
 pytest
+pytest-django
 mcp
 plotly
 pandas
+rich>=13.0.0
 
 # ML/Semantic Indexing (Optional, ~2GB)
 # faiss-cpu

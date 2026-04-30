@@ -178,7 +178,14 @@ class DeterministicChecker:
         return findings
 
     def run_pip_check(self) -> List[CheckFinding]:
-        result = self._run([sys.executable, "-m", "pip", "check"])
+        # Only run pip check when the target looks like a Python project with a
+        # dependency manifest, and prefer its own venv interpreter so we report
+        # on the target's environment rather than Faultline's.
+        manifests = ("requirements.txt", "pyproject.toml", "Pipfile", "setup.py", "setup.cfg")
+        if not any((self.target_dir / m).exists() for m in manifests):
+            return []
+        python = self._target_python() or sys.executable
+        result = self._run([python, "-m", "pip", "check"])
         if result.returncode == 0:
             return []
         return [CheckFinding(
@@ -235,9 +242,16 @@ class DeterministicChecker:
             return str(local)
         return name
 
+    def _target_python(self) -> Optional[str]:
+        for venv_dir in ("venv", ".venv"):
+            python = self.target_dir / venv_dir / ("Scripts" if os.name == "nt" else "bin") / ("python.exe" if os.name == "nt" else "python")
+            if python.exists():
+                return str(python)
+        return None
+
     def _run(self, command: List[str]) -> subprocess.CompletedProcess:
         try:
-            return subprocess.run(command, cwd=self.target_dir, capture_output=True, text=True, timeout=self.timeout)
+            return subprocess.run(command, cwd=self.target_dir, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=self.timeout)
         except FileNotFoundError as e:
             return subprocess.CompletedProcess(command, 127, "", str(e))
         except subprocess.TimeoutExpired as e:

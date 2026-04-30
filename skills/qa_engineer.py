@@ -1,6 +1,5 @@
 import os
 import subprocess
-import tempfile
 import logging
 import uuid
 from typing import Tuple
@@ -54,16 +53,8 @@ class QAEngineer:
         except Exception as e:
             return False, f"Failed to execute test: {str(e)}"
         finally:
-            # Cleanup the temporary test file
             if os.path.exists(test_filepath):
                 os.remove(test_filepath)
-                # Cleanup pytest cache if created specifically for this file
-                pycache = os.path.join(self.target_dir, "__pycache__", f"{test_filename.split('.')[0]}.cpython-311.pyc")
-                if os.path.exists(pycache):
-                    try:
-                        os.remove(pycache)
-                    except:
-                        pass
 
     def propose_code_patch(self, file_path: str, proposed_code: str) -> str:
         """

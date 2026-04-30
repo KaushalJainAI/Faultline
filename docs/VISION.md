@@ -1,6 +1,8 @@
 # Faultline Pipeline Vision
 
-The ultimate goal of the Faultline project is to provide a comprehensive, 7-step pipeline that progresses from basic static analysis to deep semantic understanding, production readiness profiling, and finally, cyber security chaos testing.
+The ultimate goal of the Faultline project is to provide a comprehensive, 7-step pipeline that progresses from basic static analysis to deep semantic understanding, production readiness profiling, and finally, cyber security chaos testing — delivered through an **interactive CLI agent** that operates like Claude Code or OpenCode.
+
+The user experience is a single command (`python faultline.py`) that drops the operator into a live session with the Faultline agent. The terminal shows the agent's reasoning as it works, every tool call and result, every file generated, and pauses to ask the operator for credentials or destructive-action permission whenever the agent needs them. This is the primary surface; the Django REST control plane remains available for headless / CI use.
 
 This document outlines that "Grand Vision" and evaluates the project's current alignment with these objectives.
 
@@ -26,26 +28,44 @@ This document outlines that "Grand Vision" and evaluates the project's current a
 - The system must analyze database and server logs and generate a report based on these logs.
 
 ### 5. Semantic Intent vs. Implementation
-**Goal:** Ensure the code actually does what it was intended to do. 
-- The LLM compares the documentation (intent) with the actual code (implementation).
-- This is achieved by creating a semantic graph using FAISS and HNSW to link documents and code descriptions.
-- This is a critical, time-consuming step where the LLM is allowed to "think hard" and scrutinize the architecture.
+**Goal:** Verify that the system behaves the way its documentation says it should — not just syntactically, but in actual purpose and responsibility.
 
-### 6. Production Readiness Profiling
-**Goal:** Identify issues that will cause the server to fail under load or over time. This includes:
-- Potentially slow running queries.
-- Missing rate limiting.
-- Inefficient data batching (N+1 queries).
-- Missing or improper caching.
-- Potential race conditions and sync/async issues.
-- MRO (Method Resolution Order) issues.
-- Memory and database connection leaks.
+The `docs/` folder is the ground truth of intent. Every function has a docstring that describes its responsibility. The bridge between the two is built as follows:
+
+1. **Semantic Mapping via FAISS.** The `SemanticIndexer` embeds all content in `docs/` and all function docstrings into the same vector space. For each function, FAISS retrieves the most semantically similar documentation passage — this is the "contract" that function is responsible for fulfilling.
+
+2. **LLM Contract Verification.** The agent is given three things: the doc passage (what the system should do), the function docstring (what the function claims to do), and the function body (what it actually does). It is asked: *"Does this implementation faithfully fulfill the requirement described in the documentation?"* Mismatches, missing logic, or contradictions are raised as findings.
+
+3. **Coverage gaps.** Any doc passage that has no function mapping above a similarity threshold is flagged as an *unimplemented requirement*. Any function with no docstring is flagged as an *unmapped responsibility* — it does something, but no one has claimed what.
+
+The result is a two-way accountability map: every doc requirement is traced to the code that owns it, and every piece of code is traceable back to the intent that justifies its existence.
+
+### 6. End-to-End & Production Readiness Testing
+**Goal:** Test the system as a whole under conditions that mirror real usage — validating that all the pieces work together, and that the system will survive real traffic without degrading.
+
+Step 4 tested individual API endpoints in isolation. Step 6 goes further: it assembles full user journeys and stresses the system as a live, connected whole.
+
+1. **End-to-End Flow Testing.** The agent reads the `docs/` to understand the intended user journeys (e.g. "a user registers, logs in, creates a resource, and retrieves it"). It then writes and executes multi-step test scripts that follow these flows against the running server — validating not just that each endpoint works, but that they work *in sequence*, with real state persisting between calls.
+
+2. **Load & Degradation Testing.** Using the discovered endpoints, the agent ramps up concurrent traffic to identify at what point the system starts returning errors, slowing down, or dropping requests. The goal is not to crash the system — it is to find the breaking point and report it.
+
+3. **Production Anti-Pattern Detection (Static).** In parallel, a static AST pass flags patterns that are known to fail at scale but are invisible during development: N+1 ORM queries inside loops, list endpoints with no pagination, blocking synchronous calls inside async handlers, and unclosed database or file handles.
+
+4. **Regression Baseline.** After a successful run, the step stores response time percentiles and error rates as a baseline. Future runs compare against this baseline and flag regressions automatically.
 
 ### 7. Cyber Security Chaos Engineering
-**Goal:** Prevent attackers from exploiting the system.
-- Create attack scripts to assault the system.
-- Analyze the limitations of each endpoint.
-- Attempt to hack the database, gain system access, or leak credentials.
+**Goal:** Actively attempt to break, bypass, and exploit the running system — then produce a structured report of every vulnerability found so the team can fix them.
+
+This step treats the system as an adversary would. The `SiegeEngine` runs a scripted attack campaign against the live server and generates a findings report ranked by severity.
+
+**Attack vectors executed:**
+- **Broken Authentication.** Replay authenticated requests with stripped, expired, or forged tokens. Any endpoint that responds with `2xx` is a critical finding.
+- **Injection Attacks.** For every input parameter discovered in steps 4 and 6, send SQL injection payloads (`' OR '1'='1`, `; DROP TABLE`), command injection strings, and template injection probes. Flag any response that leaks a stack trace, changes behavior, or shows query output.
+- **Insecure Direct Object Reference (IDOR).** For every resource endpoint with a numeric or UUID identifier, attempt to access another user's resource by ID-walking with a different session. Flag any `2xx` response that returns data belonging to a different account.
+- **Privilege Escalation.** Attempt to call admin-only or elevated endpoints using a standard user token. Flag any endpoint that does not enforce role boundaries.
+- **Input Boundary Abuse.** Send oversized payloads, null bytes, deeply nested JSON, and unicode edge cases to every input field. Flag crashes, hangs, or unexpectedly permissive responses.
+
+**Output:** A ranked security report — Critical, High, Medium, Low — with the exact request that triggered each finding, the response received, and a plain-language description of the risk. The report is the primary deliverable: it is designed to be handed directly to a developer or security team to act on.
 
 ---
 
@@ -63,24 +83,39 @@ The `DeterministicChecker` (`skills/deterministic_checker.py`) handles syntax pa
 The `ASTGrapher` (`skills/ast_grapher.py`) creates the project map, and the `DeterministicChecker` uses this map to perform root-cause dependency failure propagation, identifying exactly which core files break the most dependents.
 
 ### ✅ Step 4: Agentic API Testing
-**Status: Aligned**
-The `QAEngineer` writes functional Pytest scripts, while the `LogCorrelator` maps crashes directly to payloads using trace IDs. The newly added **Vault Authentication System** dynamically handles credentials (both static and login-based).
+**Status: Aligned (Cost-Optimized)**
+The `QAEngineer` writes functional Pytest scripts, while the `LogCorrelator` maps crashes directly to payloads using trace IDs. The newly added **Vault Authentication System** dynamically handles credentials.
+*Cost Optimization & Debugging:* The agent now utilizes a **Copy and Edit** boilerplate methodology (`agent_assets/test_boilerplates/`) to radically reduce output token costs. Furthermore, all agent step-by-step reasoning is streamed to `reports/campaign_<id>_agent.log` ensuring complete debug visibility for human reviewers.
 
 ### 🟡 Step 5: Semantic Intent
 **Status: Partially Aligned**
-The `SemanticIndexer` uses FAISS and Qwen embeddings to index Markdown documentation. The `Visualizer` has a placeholder for "Intent Correlation". 
-*Future expansion:* We need to explicitly implement the "diffing" phase where the LLM deeply compares the FAISS index against the AST graph to find logic mismatches.
+The `SemanticIndexer` (`skills/semantic_indexer.py`) builds the FAISS index over `docs/` — the indexing half is done.
+*Next implementation tasks:*
+- Extend the indexer to also embed function docstrings from the AST graph, placing docs and code in the same vector space.
+- Add the LLM contract verification pass: retrieve the top doc match per function, then send (doc passage, docstring, function body) to the agent for fulfillment judgment.
+- Surface coverage gaps: unmatched doc passages and undocumented functions.
 
-### ❌ Step 6: Production Readiness
-**Status: Gap Identified**
-Faultline does not currently have explicit skills for profiling memory leaks, race conditions, or slow queries. 
-*Future expansion:* Integrate load testing tools (like locust/k6) and memory profilers into the `skills/` directory.
+### ❌ Step 6: End-to-End & Production Readiness
+**Status: Gap**
+Step 4's `QAEngineer` tests individual endpoints. Nothing currently assembles multi-step user journeys, runs load testing, or captures a performance baseline.
+*Next implementation tasks:*
+- Teach the agent to read `docs/` for user journey descriptions and generate sequential flow test scripts.
+- Integrate a lightweight load runner (e.g. `httpx` async concurrency or `locust`) to find the degradation threshold.
+- Add the static AST pass for N+1, missing pagination, and sync-in-async patterns.
 
-### ✅ Step 7: Cyber Security
-**Status: Aligned**
-The `SiegeEngine` (`skills/attacker.py`) handles asynchronous HTTP assaults and fuzzing against endpoints.
-*Future expansion:* Expand the SiegeEngine to include specific database injection and credential brute-forcing payloads.
+### 🟡 Step 7: Cyber Security
+**Status: Partially Aligned**
+The `SiegeEngine` (`skills/attacker.py`) handles async HTTP load but does not yet run structured attack campaigns.
+*Next implementation tasks:*
+- Implement the five attack vectors (auth bypass, injection, IDOR, privilege escalation, input boundary abuse) as discrete, reusable attack scripts.
+- Add the ranked findings report generator — this is the primary output of the step.
+- Gate all live attacks behind the Vault authorization check so the system cannot be pointed at an unauthorized target.
 
 ## Conclusion
 
-Faultline's architecture (Pipeline Mode + Agent Mode) successfully provides the scaffolding for this 7-step vision. The deterministic pipeline handles Steps 1-3 perfectly, while the LangGraph agent orchestrates Steps 4, 5, and 7. The primary area for future development is Step 6 (Production Readiness profiling).
+Faultline's architecture (Pipeline Mode + Agent Mode) successfully provides the scaffolding for this 7-step vision. The deterministic pipeline handles Steps 1-3 perfectly, while the LangGraph agent orchestrates Steps 4, 5, and 7.
+
+The next three concrete milestones are:
+1. **Extend `SemanticIndexer` to embed docstrings** — places code and docs in the same vector space, enabling the contract verification pass that closes Step 5.
+2. **E2E flow test generation in `QAEngineer`** — agent reads `docs/` for user journeys and generates sequential test scripts, closing the core gap in Step 6.
+3. **Structured attack campaigns in `SiegeEngine`** — implement the five attack vectors and the ranked findings report, making Step 7 a complete self-hacking audit tool.

@@ -1,11 +1,10 @@
-import time
+import logging
 import re
 from pathlib import Path
-from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler
-import logging
 
-logging.basicConfig(level=logging.INFO)
+from watchdog.events import FileSystemEventHandler
+from watchdog.observers import Observer
+
 logger = logging.getLogger("Coroner")
 
 class LogFileHandler(FileSystemEventHandler):
@@ -33,8 +32,6 @@ class LogCorrelator:
         self._handler = None
 
     def _process_log_line(self, line: str):
-        # Extremely basic regex to find our injected Chaos ID in the logs
-        # Assumes the target application logs headers or we can identify the context
         chaos_id_match = re.search(r'X-Aegis-Request-ID[:=]?\s*([a-f0-9\-]+)', line)
         error_match = re.search(r'(ERROR|Exception|Traceback)', line, re.IGNORECASE)
 
@@ -72,6 +69,3 @@ class LogCorrelator:
 
     def get_correlations(self):
         return self.crashes
-
-if __name__ == "__main__":
-    pass

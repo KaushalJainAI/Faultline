@@ -43,7 +43,7 @@ def build_llm():
             return None
         api_key = os.environ.get("ANTHROPIC_API_KEY")
         return ChatAnthropic(
-            model=model_name or "claude-3-5-sonnet-20240620",
+            model=model_name or "claude-sonnet-4-5",
             anthropic_api_key=api_key,
             temperature=0.2
         )
@@ -103,40 +103,21 @@ class AegisAgent:
         self._build_graph()
 
     def _build_graph(self):
-        # 1. Define the Nodes
         self.workflow.add_node("agent", self.agent_node)
-        
-        # We use standard LangGraph prebuilt ToolNode
-        tool_node = ToolNode(FAULTLINE_TOOLS)
-        self.workflow.add_node("tools", tool_node)
-
-        # 2. Define the Edges
+        self.workflow.add_node("tools", ToolNode(FAULTLINE_TOOLS))
         self.workflow.set_entry_point("agent")
-        
-        # Route between agent and tools
         self.workflow.add_conditional_edges(
             "agent",
             self.should_continue,
-            {
-                "continue": "tools",
-                "end": END
-            }
+            {"continue": "tools", "end": END},
         )
-        
         self.workflow.add_edge("tools", "agent")
-
-        # 3. Compile the Graph
         self.app = self.workflow.compile()
 
     def should_continue(self, state: CampaignState) -> str:
-        """
-        Determines whether the agent needs to call a tool or if it's finished.
-        """
         last_message = state["messages"][-1]
-        # If there are tool calls, route to "tools"
         if getattr(last_message, "tool_calls", None):
             return "continue"
-        # Otherwise, end
         return "end"
 
     async def agent_node(self, state: CampaignState):
@@ -154,8 +135,7 @@ class AegisAgent:
         llm = build_llm()
         if not llm:
             logger.warning("LLM not configured. Agent returning dummy response.")
-            # We return a message that will trigger 'end' in should_continue
-            return {"messages": [AIMessage(content="LLM is not configured. Set FAULTLINE_PROVIDER and the matching API key or CLI login before running campaigns.", additional_kwargs={"finish_reason": "stop"})]}
+            return {"messages": [AIMessage(content="LLM is not configured. Set FAULTLINE_PROVIDER and the matching API key or CLI login before running campaigns.")]}
 
         # Bind tools to the model
         model_with_tools = llm.bind_tools(FAULTLINE_TOOLS)
@@ -186,12 +166,39 @@ class AegisAgent:
             f"Campaign request: {latest_user_message}"
         )
 
-    async def run_campaign(self, target_dir: str, target_url: str, log_file: str, session_headers: dict = None, initial_prompt: str = "Begin the chaos campaign against the target."):
+    async def run_campaign(
+        self,
+        target_dir: str,
+        target_url: str,
+        log_file: str,
+        session_headers: dict = None,
+        initial_prompt: str = "Begin the chaos campaign against the target.",
+        campaign_id: str = "local",
+        renderer=None,
+        hitl_manager=None,
+    ):
         """
         Entry point to start the campaign stream.
+
+        Optional CLI integration:
+          renderer: a core.cli_ui.CLIRenderer instance — receives streamed
+                    agent reasoning, tool calls, results, and findings.
+          hitl_manager: a core.hitl.HITLManager instance — when provided,
+                    destructive tools (e.g. execute_chaos_campaign) are gated
+                    behind a synchronous permission prompt before they run.
         """
-        from core.context import session_headers_var
+        from core.context import session_headers_var, chaos_vetoed_var
+        from core.cli_ui import (
+            extract_file_paths,
+            extract_finding_title,
+            summarize_args,
+        )
+        import json
+        from pathlib import Path
+
         session_headers_var.set(session_headers or {})
+        chaos_vetoed_var.set(False)
+
         initial_state = {
             "messages": [HumanMessage(content=initial_prompt)],
             "target_dir": target_dir,
@@ -199,16 +206,74 @@ class AegisAgent:
             "log_file": log_file,
             "session_headers": session_headers or {},
         }
-        
-        async for event in self.app.astream(initial_state):
-            for k, v in event.items():
-                logger.info(f"Node '{k}' executed.")
-        
-        return "Campaign Completed."
 
-if __name__ == "__main__":
-    # Example usage:
-    # import asyncio
-    # agent = AegisAgent()
-    # asyncio.run(agent.run_campaign(".", "http://localhost:8000", "server.log"))
-    pass
+        agent_log_path = Path("reports") / f"campaign_{campaign_id}_agent.log"
+        agent_log_path.parent.mkdir(exist_ok=True)
+
+        with open(agent_log_path, "a", encoding="utf-8") as f:
+            f.write(f"=== Agent Campaign Started: {campaign_id} ===\n")
+            f.write(f"Initial Prompt: {initial_prompt}\n")
+            f.flush()
+
+            async for event in self.app.astream(initial_state):
+                for k, v in event.items():
+                    logger.info(f"Node '{k}' executed.")
+
+                    # ---- existing log-file write (unchanged behavior) ----
+                    f.write(f"\n--- Node: {k} ---\n")
+                    if "messages" in v:
+                        for msg in v["messages"]:
+                            f.write(f"[{msg.__class__.__name__}]: {msg.content}\n")
+                            if hasattr(msg, "tool_calls") and msg.tool_calls:
+                                f.write(f"Tool Calls: {json.dumps(msg.tool_calls, indent=2)}\n")
+                    else:
+                        f.write(f"State Update: {json.dumps(v, default=str)}\n")
+                    f.flush()
+
+                    # ---- new: CLI rendering + HITL gates ----
+                    if renderer and "messages" in v:
+                        for msg in v["messages"]:
+                            if k == "agent":
+                                if getattr(msg, "content", None):
+                                    renderer.show_agent_thinking(msg.content)
+                                tool_calls = getattr(msg, "tool_calls", None) or []
+                                for tc in tool_calls:
+                                    tool_name = tc.get("name", "unknown")
+                                    args = tc.get("args", {}) or {}
+                                    renderer.show_tool_call(
+                                        tool_name, summarize_args(args)
+                                    )
+                                    if tool_name == "execute_chaos_campaign" and hitl_manager:
+                                        from core.hitl import async_request_permission
+                                        try:
+                                            payloads = json.loads(args.get("payloads_json", "[]"))
+                                            count = len(payloads) if isinstance(payloads, list) else 0
+                                        except Exception:
+                                            count = 0
+                                        renderer.show_hitl_request(
+                                            f"execute_chaos_campaign will fire {count} payload(s) "
+                                            f"at {args.get('target_url', target_url)}"
+                                        )
+                                        approved = await async_request_permission(
+                                            "execute_chaos_campaign",
+                                            f"Fire {count} HTTP attack payload(s) at "
+                                            f"{args.get('target_url', target_url)}"
+                                        )
+                                        if not approved:
+                                            chaos_vetoed_var.set(True)
+                                            renderer.show_message(
+                                                "  Chaos campaign vetoed by operator.",
+                                                style="bold red",
+                                            )
+                            elif k == "tools":
+                                tool_name = getattr(msg, "name", "tool")
+                                result_text = str(getattr(msg, "content", ""))
+                                renderer.show_tool_result(tool_name, result_text)
+                                for path in extract_file_paths(result_text):
+                                    renderer.show_file_generated(path)
+                                if tool_name == "record_finding":
+                                    title = extract_finding_title(result_text)
+                                    if title:
+                                        renderer.show_finding("medium", title)
+
+        return "Campaign Completed."

@@ -5,7 +5,6 @@ import logging
 from typing import List, Dict
 from urllib.parse import urljoin
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("SiegeEngine")
 
 class SiegeEngine:
@@ -22,8 +21,7 @@ class SiegeEngine:
 
     async def _send_payload(self, client: httpx.AsyncClient, method: str, endpoint: str, payload: Dict, headers: Dict):
         url = urljoin(self.base_url, endpoint.lstrip("/"))
-        
-        # Inject Chaos ID and Session Headers
+
         request_id = str(uuid.uuid4())
         chaos_headers = {**headers, **self.session_headers, "X-Aegis-Request-ID": request_id}
         
@@ -87,8 +85,5 @@ class SiegeEngine:
                     self.results.append(res)
                     if res.get("status_code") and res["status_code"] >= 500:
                         logger.error("Potential crash. Request ID: %s on %s", res["request_id"], res["endpoint"])
-                    
-        return self.results
 
-if __name__ == "__main__":
-    pass
+        return self.results
