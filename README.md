@@ -174,25 +174,27 @@ Modes:
 Implemented:
 
 - Interactive CLI (`faultline.py`) with rich live streaming, HITL credential and permission prompts, and a `request_user_input` tool the agent can call mid-campaign.
+- **Per-run isolated output folder** — every run creates `reports/<project>_<YYYYMMDD>_<HHMMSS>/` so runs are auditable and comparable over time.
+- **Production-readiness score** — deterministic 0–100 score (no LLM text) shown at the top of every pipeline report with severity table and next-steps checklist.
+- **Agent turn counter and phase timing** — terminal shows `[ Agent turn N ]` and elapsed seconds per phase so operators can see exactly what the agent is doing.
+- **`copy_test_boilerplate` tool** — agent copies a working boilerplate from `agent_assets/test_boilerplates/` into the run folder's `testcases/` directory, edits it in-place, then executes it. Keeps token costs low and test structure readable.
 - Django REST control plane.
 - Database-backed campaign, finding, and tool-run persistence.
 - Dynamic Vault authentication system for static tokens and login endpoints.
-- Cost-optimized agent boilerplate copying paradigm.
-- Step-by-step agent debug streaming into `reports/campaign_<id>_agent.log`.
 - AST-based Python project mapper.
 - Pipeline-first deterministic scanner for syntax, imports, dependency conflicts, pytest collection, Ruff findings, and dependency failure propagation.
 - Agent-first file listing and bounded file-reading tools.
-- Basic Django/DRF route, view, and serializer hints.
+- Multi-provider LLM support: OpenRouter, OpenAI, Anthropic, Google, and one-shot CLI delegates (Claude Code, Gemini CLI, Codex).
 - LangChain tools and MCP wrappers.
 - Async HTTP attack engine with request ID tracing.
 - Watchdog-based log correlation.
 - Pytest-based functional test runner.
 - Safe patch proposal writer.
 - FAISS-backed semantic documentation indexer.
-- Markdown reports under `reports/campaign_<id>.md`.
 
 Known next steps:
 
 - Add first-class target process lifecycle controls to direct CLI runs.
 - Add richer Django/DRF endpoint schema extraction from serializers and routers.
+- Extend `SemanticIndexer` to embed function docstrings for full Step 5 contract verification.
 - Add integration tests against a disposable demo target application.

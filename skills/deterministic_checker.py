@@ -39,7 +39,9 @@ class DeterministicChecker:
         findings.extend(self.run_pip_check())
         findings.extend(self.run_pytest_collect())
 
+        # Build the AST graph once; reuse for both call-sig checks and dep analysis
         graph = ASTGrapher(self.target_dir).analyze_project()
+        findings.extend(self.check_call_signatures(graph))
         root_causes = self.analyze_dependency_failures(graph, findings)
 
         return {
@@ -50,6 +52,7 @@ class DeterministicChecker:
             },
             "findings": [asdict(f) for f in findings],
             "dependency_root_causes": root_causes,
+            "serializer_schemas": graph.get("serializer_schemas", []),
         }
 
     def _python_files(self) -> List[Path]:
@@ -211,6 +214,91 @@ class DeterministicChecker:
             evidence=(result.stdout + "\n" + result.stderr)[-8000:],
             suggested_fix="Fix import-time failures and test configuration before generated API tests run.",
         )]
+
+    def check_call_signatures(self, graph: Dict) -> List[CheckFinding]:
+        """
+        Validate every resolved call-site against the callee's signature.
+        Flags: too few required arguments, too many positional arguments.
+        Skips calls that use *args / **kwargs unpacking (can't be checked statically).
+        """
+        signatures = graph.get("signatures", {})
+        findings: List[CheckFinding] = []
+        seen: set = set()
+
+        for edge in graph.get("call_edges", []):
+            info = edge.get("call_info")
+            if not info:
+                continue
+            # Skip star-unpack calls — we can't know actual arg count
+            if info.get("has_star") or info.get("has_dstar"):
+                continue
+
+            target_id = edge["target"]
+            sig = signatures.get(target_id)
+            if not sig:
+                continue
+            # Skip variadic functions (accept any number of args)
+            if sig.get("has_var_positional") or sig.get("has_var_keyword"):
+                continue
+
+            pos_args  = info.get("pos_args", 0)
+            kw_names  = set(info.get("kw_names", []))
+            min_pos   = sig.get("min_positional", 0)
+            max_pos   = sig.get("max_positional", 0)
+            file_path = info.get("file", "")
+            lineno    = info.get("lineno")
+
+            # How many required positional params are still unmet after keywords cover them
+            required_params = [
+                p for p in sig.get("params", [])
+                if p.get("required") and not p.get("kwonly") and p["name"] not in kw_names
+            ]
+            unmet = max(0, len(required_params) - pos_args)
+
+            func_label = target_id.split(":")[-1]
+
+            if unmet > 0:
+                key = (target_id, file_path, lineno, "few")
+                if key not in seen:
+                    seen.add(key)
+                    required_names = ", ".join(
+                        p["name"] for p in sig["params"] if p.get("required")
+                    )
+                    findings.append(CheckFinding(
+                        title=f"Too few arguments: {func_label}()",
+                        category="api",
+                        severity="high",
+                        summary=(
+                            f"Called with {pos_args} positional arg(s) but "
+                            f"{min_pos} required. Missing: {required_names}."
+                        ),
+                        evidence=f"Signature: {sig.get('sig_str', '')}",
+                        file_path=file_path,
+                        line_number=lineno,
+                        suggested_fix=(
+                            f"Pass all required args: {required_names}."
+                        ),
+                    ))
+
+            elif pos_args > max_pos:
+                key = (target_id, file_path, lineno, "many")
+                if key not in seen:
+                    seen.add(key)
+                    findings.append(CheckFinding(
+                        title=f"Too many arguments: {func_label}()",
+                        category="api",
+                        severity="medium",
+                        summary=(
+                            f"Called with {pos_args} positional arg(s) but "
+                            f"function accepts at most {max_pos}."
+                        ),
+                        evidence=f"Signature: {sig.get('sig_str', '')}",
+                        file_path=file_path,
+                        line_number=lineno,
+                        suggested_fix="Remove extra arguments or check if the function signature changed.",
+                    ))
+
+        return findings
 
     def analyze_dependency_failures(self, graph: Dict, findings: List[CheckFinding]) -> List[Dict]:
         failed_files = {f.file_path for f in findings if f.file_path}

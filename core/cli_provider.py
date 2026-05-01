@@ -38,6 +38,7 @@ class CLIAdapter:
         return shlex.split(os.environ.get(env_name, ""))
 
     def run_command(self, cmd: list[str], timeout: int) -> str:
+        """Run a CLI command and always return a string — never raise."""
         logger.info("Executing %s CLI: %s", self.name.title(), " ".join(cmd))
         try:
             result = subprocess.run(
@@ -53,21 +54,31 @@ class CLIAdapter:
                 return f"{self.name.title()} CLI Error ({result.returncode}): {result.stderr or result.stdout}"
             return result.stdout
         except FileNotFoundError:
-            resolved_cmd = [self.executable(), *cmd[1:]]
-            result = subprocess.run(
-                resolved_cmd,
-                cwd=self.target_dir,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=timeout,
-            )
-            if result.returncode != 0:
-                return f"{self.name.title()} CLI Error ({result.returncode}): {result.stderr or result.stdout}"
-            return result.stdout
+            # Binary not on PATH — try shutil.which resolution once
+            resolved = self.executable()
+            if resolved == cmd[0]:
+                return f"Error: {self.name.title()} CLI binary not found: {cmd[0]}"
+            try:
+                result = subprocess.run(
+                    [resolved, *cmd[1:]],
+                    cwd=self.target_dir,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=timeout,
+                )
+                if result.returncode != 0:
+                    return f"{self.name.title()} CLI Error ({result.returncode}): {result.stderr or result.stdout}"
+                return result.stdout
+            except FileNotFoundError:
+                return f"Error: {self.name.title()} CLI binary not found: {resolved}"
+            except subprocess.TimeoutExpired:
+                return f"Error: {self.name.title()} CLI timed out after {timeout}s."
         except subprocess.TimeoutExpired:
-            return f"Error: {self.name.title()} CLI task timed out."
+            return f"Error: {self.name.title()} CLI timed out after {timeout}s."
+        except Exception as exc:
+            return f"Error: {self.name.title()} CLI failed unexpectedly: {exc}"
 
 class ClaudeAdapter(CLIAdapter):
     name = "claude"
@@ -101,7 +112,7 @@ class GeminiAdapter(CLIAdapter):
 
     def run_task(self, prompt: str, options: Optional[Dict] = None) -> str:
         cmd = [self.resolved_binary(), "-p", prompt, "--dangerously-skip-permissions", "--skip-trust", *self.extra_args("FAULTLINE_GEMINI_CLI_ARGS")]
-        return self.run_command(cmd, self.timeout(options, 300))
+        return self.run_command(cmd, self.timeout(options, 600))
 
 class CodexAdapter(CLIAdapter):
     name = "codex"

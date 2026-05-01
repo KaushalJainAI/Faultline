@@ -167,3 +167,4 @@ Thumbs.db
 reports/
 !reports/.gitkeep
 .aegis_patches/
+db/

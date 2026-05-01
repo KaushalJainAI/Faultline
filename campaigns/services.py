@@ -10,6 +10,7 @@ from campaigns.models import Campaign, Finding, ToolRun
 from core.agent import AegisAgent
 from core.pipeline import PipelineRunner
 from core.provider_config import get_config_status
+from core.run_context import make_run_folder
 from core.tools import analyze_project_structure, index_project_documentation
 from skills.medic import Medic
 from vault.services import Authenticator
@@ -220,6 +221,11 @@ def run_campaign_pipeline(campaign_id: str) -> None:
         campaign.started_at = timezone.now()
         campaign.save(update_fields=["status", "started_at"])
 
+        run_folder = make_run_folder(
+            target_dir=campaign.target_path,
+            suffix=str(campaign.id)[:8],
+        )
+
         medic = Medic(
             start_command=campaign.start_command,
             health_url=campaign.health_url or None,
@@ -234,7 +240,7 @@ def run_campaign_pipeline(campaign_id: str) -> None:
                 campaign.target_path,
                 lambda: _persist_pipeline_findings(
                     campaign,
-                    PipelineRunner(campaign.target_path).run(include_semantic=True),
+                    PipelineRunner(campaign.target_path, run_folder=run_folder).run(include_semantic=True),
                 ),
             )
 
@@ -286,15 +292,17 @@ def run_campaign_pipeline(campaign_id: str) -> None:
                     target_dir=campaign.target_path,
                     target_url=campaign.target_url,
                     log_file=campaign.log_file,
+                    run_folder=str(run_folder),
                     session_headers=session_headers,
                     initial_prompt=(
                         "Run a Django/DRF quality campaign. Identify endpoints and components. "
-                        "Read `docs/TESTING_GUIDE.md`. To minimize output tokens, copy the relevant boilerplate "
-                        "from `agent_assets/test_boilerplates/`, edit it in-place to fit the discovered endpoints or models, "
-                        "and save the resulting script in the `reports/testcases/` directory. "
+                        "Read `docs/TESTING_GUIDE.md`. To minimize output tokens, use copy_test_boilerplate "
+                        "to copy the relevant boilerplate (api or model), edit it in-place to fit the discovered "
+                        "endpoints or models, then execute it with run_functional_test. "
+                        "Save the final agent report with save_vulnerability_report. "
                         "Verbalize your step-by-step reasoning clearly so human reviewers can trace your logic in the logs."
                     ),
-                    campaign_id=str(campaign.id)
+                    campaign_id=str(campaign.id),
                 )
             ),
         )

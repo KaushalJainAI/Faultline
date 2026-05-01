@@ -1,6 +1,10 @@
 import json
 import logging
 import asyncio
+import os
+import shutil
+from datetime import datetime
+from pathlib import Path
 from langchain_core.tools import tool
 
 from skills.ast_grapher import ASTGrapher
@@ -163,15 +167,23 @@ async def execute_chaos_campaign(payloads_json: str, target_url: str, log_file: 
         return f"Execution error: {e}"
 
 @tool
-def run_functional_test(test_code: str, target_dir: str) -> str:
+def run_functional_test(test_code: str, target_dir: str, test_type: str = "api") -> str:
     """
     Writes a Pytest script to the target directory and executes it.
-    Use this to perform functional verification (TestSprite DNA) before or after chaos testing.
+    Validates that required dependencies are installed before running tests.
+
+    Args:
+        test_code: The test code to execute
+        target_dir: Directory to run tests in
+        test_type: Type of test - 'api', 'auth', 'crud', 'validation', 'idor', 'django_model', 'load', 'e2e_journey', 'e2e_react'
+
+    Returns:
+        String with execution status and output
     """
-    logger.info("Tool Call: Executing Pytest functional test")
+    logger.info("Tool Call: Executing Pytest functional test (type=%s)", test_type)
     try:
         qa = QAEngineer(target_dir=target_dir)
-        passed, output = qa.run_functional_test(test_code)
+        passed, output = qa.run_functional_test(test_code, test_type=test_type)
         status = "PASSED" if passed else "FAILED"
         return f"Status: {status}\nOutput:\n{output}"
     except Exception as e:
@@ -192,20 +204,75 @@ def propose_code_patch(file_path: str, proposed_code: str, target_dir: str) -> s
         return f"Patch generation error: {e}"
 
 @tool
-def save_vulnerability_report(report_markdown: str, filename: str = "latest_report.md") -> str:
+def save_vulnerability_report(report_markdown: str, filename: str = "agent_report.md", run_folder: str = "") -> str:
     """
-    Saves a synthesized vulnerability and chaos engineering report to the reports/ directory.
+    Saves a synthesized vulnerability and chaos engineering report.
+    If run_folder is provided (the per-run output directory), the report is written there.
+    Otherwise it falls back to the top-level reports/ directory.
     """
-    logger.info(f"Tool Call: Saving Vulnerability Report to {filename}")
-    import os
+    logger.info("Tool Call: Saving Vulnerability Report to %s", filename)
     try:
-        os.makedirs("reports", exist_ok=True)
-        filepath = os.path.join("reports", filename)
-        with open(filepath, "w", encoding="utf-8") as f:
-            f.write(report_markdown)
+        out_dir = Path(run_folder) if run_folder else Path("reports")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        filepath = out_dir / filename
+        filepath.write_text(report_markdown, encoding="utf-8")
         return f"Successfully saved report to {filepath}"
     except Exception as e:
         return f"Error saving report: {e}"
+
+
+_BOILERPLATE_ALIASES = {
+    "api": "api_test_boilerplate.py",
+    "model": "model_test_boilerplate.py",
+    "auth": "api_auth_test_boilerplate.py",
+    "crud": "api_crud_test_boilerplate.py",
+    "validation": "api_input_validation_test_boilerplate.py",
+    "idor": "api_idor_test_boilerplate.py",
+    "django_model": "django_model_advanced_test_boilerplate.py",
+    "load": "load_test_boilerplate.py",
+    "e2e_journey": "e2e_user_journey_test_boilerplate.py",
+    "e2e_react": "e2e_react_ui_test_boilerplate.py",
+}
+
+_BOILERPLATE_DIR = Path(__file__).resolve().parent.parent / "agent_assets" / "test_boilerplates"
+
+
+@tool
+def copy_test_boilerplate(boilerplate_name: str, run_folder: str) -> str:
+    """
+    Copies a test boilerplate into the run folder's testcases/ directory.
+
+    boilerplate_name: "api" or "model" (or the exact filename without extension).
+    run_folder: the per-run output directory (absolute path), e.g. reports/myproject_20240501_120000.
+
+    Returns the absolute path to the copied file so you can read it, edit it in-place
+    with propose_code_patch, and then execute it with run_functional_test.
+    """
+    logger.info("Tool Call: copy_test_boilerplate(%s) → %s", boilerplate_name, run_folder)
+    try:
+        filename = _BOILERPLATE_ALIASES.get(boilerplate_name.lower(), boilerplate_name)
+        if not filename.endswith(".py"):
+            filename += ".py"
+
+        src = _BOILERPLATE_DIR / filename
+        if not src.exists():
+            available = [p.name for p in _BOILERPLATE_DIR.glob("*.py")]
+            return (
+                f"Error: boilerplate '{filename}' not found in {_BOILERPLATE_DIR}. "
+                f"Available: {available}"
+            )
+
+        dest_dir = Path(run_folder) / "testcases"
+        dest_dir.mkdir(parents=True, exist_ok=True)
+
+        stamp = datetime.now().strftime("%H%M%S")
+        stem = Path(filename).stem
+        dest = dest_dir / f"{stem}_{stamp}.py"
+        shutil.copy2(src, dest)
+
+        return str(dest.resolve())
+    except Exception as e:
+        return f"Error copying boilerplate: {e}"
 
 @tool
 def execute_claude_code_task(task: str, target_dir: str) -> str:
@@ -233,18 +300,27 @@ def execute_gemini_cli_task(prompt: str, target_dir: str) -> str:
         return f"Execution error: {e}"
 
 @tool
-def generate_dependency_graph(target_dir: str) -> str:
+def generate_dependency_graph(target_dir: str, output_path: str = "") -> str:
     """
-    Generates a Mermaid.js dependency graph of the project structure.
-    Saves the result to reports/dependency_graph.md.
+    Generates an interactive Plotly Dash dependency graph of the project structure,
+    including file→file import edges, function call edges, and class inheritance edges.
+    Saves a Python script to the run folder. Run it with: python <path>
     """
     logger.info(f"Tool Call: Generating dependency graph for {target_dir}")
     try:
+        from skills.graph_3d import Graph3DGenerator
         grapher = ASTGrapher(root_dir=target_dir)
         ast_data = grapher.analyze_project()
-        viz = Visualizer()
-        path = viz.generate_mermaid_dependency_graph(ast_data)
-        return f"Dependency graph generated and saved to {path}"
+        dest = output_path or str(Path("reports") / "dependency_graph.py")
+        path = Graph3DGenerator().generate(ast_data, dest)
+        n = len(ast_data.get("files", {}))
+        c = len(ast_data.get("call_edges", []))
+        i = len(ast_data.get("inheritance_edges", []))
+        return (
+            f"Dependency graph saved to {path}\n"
+            f"  {n} files · {c} call edges · {i} inheritance edges\n"
+            f"Launch viewer: python {path}"
+        )
     except Exception as e:
         return f"Error generating dependency graph: {e}"
 
@@ -375,6 +451,7 @@ FAULTLINE_TOOLS = [
     index_project_documentation,
     query_knowledge_base,
     validate_python_code,
+    copy_test_boilerplate,
     run_functional_test,
     execute_chaos_campaign,
     propose_code_patch,

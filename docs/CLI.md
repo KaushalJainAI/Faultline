@@ -92,13 +92,15 @@ Agent phase
 
 The renderer surfaces:
 
-- **Banner** — target dir, URL, mode
+- **Banner** — target dir, URL, mode, and the run folder path
 - **Pipeline steps** — `o` running, `+` done, `x` error, `-` skipped
-- **Agent thinking** — dim italic text (truncated at 300 chars)
+- **Agent turns** — `[ Agent turn N ]` counter in dim cyan at the start of each LLM iteration
+- **Agent thinking** — dim italic text (truncated at 600 chars with line count)
 - **Tool calls** — `-> tool_name(args summary)` in cyan
-- **Tool results** — `<- result` in green (truncated at 200 chars)
+- **Tool results** — `<- result` in green (truncated at 400 chars)
+- **Phase timing** — elapsed seconds after each phase completes
 - **Findings** — color-coded panels by severity (CRITICAL red, HIGH orange, MEDIUM yellow, LOW blue)
-- **File generation** — `[+] reports/foo.md` when reports / patches / tests are written
+- **File generation** — `[+] path/to/file` when reports / patches / tests are written
 - **HITL pauses** — yellow panels announcing the prompt before it blocks
 
 ---
@@ -163,14 +165,28 @@ Run `python faultline.py --help` for the full list.
 
 ## Where Output Goes
 
-| File                                       | Contents                                              |
-|--------------------------------------------|-------------------------------------------------------|
-| `reports/pipeline_report.md`               | Pipeline phase findings (markdown)                     |
-| `reports/campaign_<campaign_id>_agent.log` | Full step-by-step agent reasoning (debug trail)        |
-| `reports/campaign_<campaign_id>.md`        | Final campaign report (when `record_finding` is used)  |
-| `.aegis_patches/<file>`                    | Proposed code patches written by `propose_code_patch`  |
+Each run creates a unique timestamped folder so runs are isolated and comparable:
 
-The terminal output is a real-time view; the markdown reports are the durable record.
+```
+reports/
+  <project>_<YYYYMMDD>_<HHMMSS>/     ← shown in banner after startup
+    pipeline_report.md               ← deterministic: syntax, imports, deps, score
+    campaign_agent.log               ← full agent reasoning (debug trail)
+    agent_report.md                  ← AI-authored vulnerability findings
+    testcases/
+      api_test_<HHMMSS>.py           ← boilerplate copied + edited by the agent
+      model_test_<HHMMSS>.py
+```
+
+| File                              | Contents                                                    |
+|-----------------------------------|-------------------------------------------------------------|
+| `pipeline_report.md`              | Production-readiness score, severity table, findings by category, next steps checklist |
+| `campaign_agent.log`              | Full step-by-step agent reasoning (debug trail for reviewers) |
+| `agent_report.md`                 | AI-authored vulnerability summary (written via `save_vulnerability_report`) |
+| `testcases/*.py`                  | Test scripts copied from boilerplates and edited for this project |
+| `.aegis_patches/<file>`           | Proposed code patches written by `propose_code_patch`        |
+
+The terminal output is a real-time view; the run folder is the durable, auditable record. Re-run Faultline after fixing issues to see the production-readiness score improve.
 
 ---
 

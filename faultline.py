@@ -57,6 +57,7 @@ from rich.prompt import Prompt    # noqa: E402
 
 from core.cli_ui import CLIRenderer       # noqa: E402
 from core.hitl import enable_hitl, hitl   # noqa: E402
+from core.run_context import make_run_folder  # noqa: E402
 
 console = Console()
 
@@ -114,15 +115,16 @@ def parse_args() -> argparse.Namespace:
 # Provider validation — fail loudly before starting the agent
 # ---------------------------------------------------------------------------
 
-def validate_provider(target_dir: str) -> bool:
+def validate_provider(target_dir: str, renderer: CLIRenderer) -> bool:
     try:
-        from core.provider_config import get_config_status
+        from core.provider_config import get_config_status, get_cli_provider_name
         configured, message = get_config_status(target_dir)
         if not configured:
             console.print(f"[bold red]Provider not configured:[/bold red] {message}")
             console.print("[dim]Set FAULTLINE_PROVIDER and the matching API key, "
                           "or log in to claude/gemini/codex CLI.[/dim]")
             return False
+
         return True
     except Exception as exc:
         console.print(f"[yellow]Provider check failed: {exc}[/yellow]")
@@ -133,14 +135,16 @@ def validate_provider(target_dir: str) -> bool:
 # Pipeline phase
 # ---------------------------------------------------------------------------
 
-def run_pipeline(args: argparse.Namespace, renderer: CLIRenderer) -> str:
+def run_pipeline(args: argparse.Namespace, renderer: CLIRenderer, run_folder: Path) -> str:
     from core.pipeline import PipelineRunner
     console.print("\n[bold cyan]Pipeline phase[/bold cyan]")
-    runner = PipelineRunner(args.target_dir)
+    renderer.start_phase()
+    runner = PipelineRunner(args.target_dir, run_folder=run_folder)
     result = runner.run(
         include_semantic=not args.no_semantic,
         renderer=renderer,
     )
+    renderer.show_phase_timing("Pipeline phase")
     return result.get("report_path", "")
 
 
@@ -148,14 +152,17 @@ def run_pipeline(args: argparse.Namespace, renderer: CLIRenderer) -> str:
 # Agent phase
 # ---------------------------------------------------------------------------
 
-async def run_agent(args: argparse.Namespace, renderer: CLIRenderer) -> None:
+async def run_agent(args: argparse.Namespace, renderer: CLIRenderer, run_folder: Path) -> None:
     from core.agent import AegisAgent
     console.print("\n[bold cyan]Agent phase[/bold cyan]")
+    renderer.start_phase()
 
     initial_prompt = args.prompt or (
         "Run a full Faultline campaign against the target. "
         "First inspect the project structure with the file-listing and AST tools. "
-        "Then write functional tests, validate them, and execute targeted chaos payloads. "
+        "Then write functional tests using the copy_test_boilerplate tool, validate them, "
+        "and execute targeted chaos payloads. "
+        "Save all test scripts to the Testcases Dir shown in your context. "
         "If you encounter an authentication challenge or need a credential, "
         "call the request_user_input tool with input_type='credential' to ask the operator. "
         "Record findings via record_finding so they appear in the final report."
@@ -166,6 +173,7 @@ async def run_agent(args: argparse.Namespace, renderer: CLIRenderer) -> None:
         target_dir=args.target_dir,
         target_url=args.target_url,
         log_file=args.log_file,
+        run_folder=str(run_folder),
         initial_prompt=initial_prompt,
         campaign_id=args.campaign_id,
         renderer=renderer,
@@ -190,17 +198,21 @@ async def main_async() -> int:
         mode=args.mode,
     )
 
+    # Create the per-run output folder immediately so user sees it in the banner area.
+    run_folder = make_run_folder(args.target_dir)
+    renderer.show_run_folder(str(run_folder))
+
     if args.mode in {"agent", "hybrid"}:
-        if not validate_provider(args.target_dir):
+        if not validate_provider(args.target_dir, renderer):
             return 2
 
     report_path = ""
     try:
         if args.mode in {"pipeline", "hybrid"}:
-            report_path = run_pipeline(args, renderer)
+            report_path = run_pipeline(args, renderer, run_folder)
 
         if args.mode in {"agent", "hybrid"}:
-            await run_agent(args, renderer)
+            await run_agent(args, renderer, run_folder)
     except KeyboardInterrupt:
         console.print("\n[bold red]Aborted by user.[/bold red]")
         return 130
@@ -210,7 +222,7 @@ async def main_async() -> int:
         traceback.print_exc()
         return 1
 
-    renderer.show_complete(report_path or "reports/")
+    renderer.show_complete(report_path or str(run_folder))
     return 0
 
 

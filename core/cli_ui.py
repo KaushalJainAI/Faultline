@@ -2,19 +2,21 @@
 Rich terminal renderer for the interactive Faultline CLI.
 
 Used by faultline.py to surface real-time agent activity:
-  - banner with target info
-  - pipeline step progress
-  - agent reasoning (dim italics)
+  - banner with target info and run folder path
+  - pipeline step progress with timing
+  - agent reasoning (dim italics) with iteration counter
   - tool calls (cyan) and results (green)
   - findings (severity-colored panels)
   - file-generation events
   - HITL pause notices
+  - phase timing
   - completion summary
 
 All renderer methods are no-ops when invoked without a Console (defensive).
 """
 
 import re
+import time
 from typing import Optional, Union, List
 
 from rich.console import Console
@@ -61,6 +63,7 @@ class CLIRenderer:
     def __init__(self, console: Optional[Console] = None):
         self.console = console or Console()
         self._tool_call_count = 0
+        self._phase_start: Optional[float] = None
 
     # ------------------------------------------------------------------
     # Banner / completion
@@ -72,13 +75,18 @@ class CLIRenderer:
             f"[bold]Target URL:[/bold] {target_url or '[dim]none[/dim]'}\n"
             f"[bold]Mode:[/bold] [magenta]{mode}[/magenta]"
         )
-        panel = Panel(
+        self.console.print(Panel(
             body,
             title="[bold cyan]FAULTLINE[/bold cyan] [dim]interactive cli[/dim]",
             border_style="cyan",
             padding=(1, 2),
+        ))
+
+    def show_run_folder(self, path: str) -> None:
+        self.console.print(
+            f"  [bold green]Run folder:[/bold green] [bold]{path}[/bold]\n"
+            f"  [dim]All reports, logs, and test scripts will be saved there.[/dim]"
         )
-        self.console.print(panel)
 
     def show_complete(self, report_path: str = "") -> None:
         body = "[bold green]Campaign complete.[/bold green]"
@@ -102,12 +110,16 @@ class CLIRenderer:
     # Agent stream
     # ------------------------------------------------------------------
 
+    def show_agent_iteration(self, n: int) -> None:
+        self.console.print(f"\n  [dim cyan][ Agent turn {n} ][/dim cyan]")
+
     def show_agent_thinking(self, content: Union[str, list]) -> None:
         text = _coerce_text(content).strip()
         if not text:
             return
-        if len(text) > 300:
-            text = text[:300].rstrip() + "..."
+        total_lines = text.count("\n") + 1
+        if len(text) > 600:
+            text = text[:600].rstrip() + f"... [dim]({total_lines} lines)[/dim]"
         self.console.print(Text(f"  {text}", style="dim italic"))
 
     def show_tool_call(self, tool_name: str, args_summary: str = "") -> None:
@@ -119,13 +131,27 @@ class CLIRenderer:
 
     def show_tool_result(self, tool_name: str, result_summary: str = "") -> None:
         text = (result_summary or "").strip()
-        if len(text) > 200:
-            text = text[:200].rstrip() + "..."
+        if len(text) > 400:
+            text = text[:400].rstrip() + "..."
         text = text.replace("\n", " ")
         if text:
             self.console.print(f"  [green]<-[/green] [dim]{text}[/dim]")
         else:
             self.console.print(f"  [green]<-[/green] [dim](no output)[/dim]")
+
+    # ------------------------------------------------------------------
+    # Phase timing
+    # ------------------------------------------------------------------
+
+    def start_phase(self) -> None:
+        self._phase_start = time.monotonic()
+
+    def show_phase_timing(self, phase: str) -> None:
+        if self._phase_start is None:
+            return
+        elapsed = time.monotonic() - self._phase_start
+        self._phase_start = None
+        self.console.print(f"  [dim]  {phase} completed in {elapsed:.1f}s[/dim]")
 
     # ------------------------------------------------------------------
     # Findings & files
@@ -137,12 +163,11 @@ class CLIRenderer:
         body = f"[bold]{title}[/bold]"
         if detail:
             body += f"\n[dim]{detail}[/dim]"
-        panel = Panel(
+        self.console.print(Panel(
             body,
             title=f"[{color}]Finding: {sev.upper()}[/{color}]",
             border_style=color,
-        )
-        self.console.print(panel)
+        ))
 
     def show_file_generated(self, path: str) -> None:
         self.console.print(f"  [green][+][/green] [bold]{path}[/bold]")
@@ -152,16 +177,46 @@ class CLIRenderer:
     # ------------------------------------------------------------------
 
     def show_hitl_request(self, prompt: str, is_sensitive: bool = False) -> None:
-        title = "[yellow]Awaiting Human Input[/yellow]"
-        if is_sensitive:
-            title = "[bold yellow]Awaiting Sensitive Input[/bold yellow]"
-        self.console.print(
-            Panel(prompt, title=title, border_style="yellow", padding=(0, 2))
-        )
+        title = "[bold yellow]Awaiting Sensitive Input[/bold yellow]" if is_sensitive else "[yellow]Awaiting Human Input[/yellow]"
+        self.console.print(Panel(prompt, title=title, border_style="yellow", padding=(0, 2)))
 
     def show_message(self, text: str, style: str = "white") -> None:
-        """Generic single-line message escape hatch."""
         self.console.print(Text(text, style=style))
+
+    # ------------------------------------------------------------------
+    # CLI-mode warning
+    # ------------------------------------------------------------------
+
+    def show_cli_turn(self, turn: int, max_turns: int, cli_name: str) -> None:
+        self.console.print(
+            f"\n  [bold cyan][ {cli_name} — turn {turn}/{max_turns} ][/bold cyan]"
+        )
+
+    def show_cli_waiting(self, elapsed: int, cli_name: str) -> None:
+        self.console.print(
+            f"  [dim]  {cli_name} is working… {elapsed}s elapsed[/dim]"
+        )
+
+    def show_cli_turn_done(self, turn: int, done: bool) -> None:
+        marker = "[bold green]finished[/bold green]" if done else "[dim]continuing…[/dim]"
+        self.console.print(f"  [green]✓[/green] Turn {turn} complete — {marker}")
+
+    def show_cli_turn_error(self, turn: int, error: str) -> None:
+        short = error[:120].replace("\n", " ")
+        self.console.print(
+            f"  [bold red]![/bold red] Turn {turn} error: [dim]{short}[/dim]"
+        )
+
+    def show_cli_section(self, heading: str) -> None:
+        """Surface a section heading extracted from the agent's response."""
+        self.console.print(f"  [bold magenta]»[/bold magenta] [dim]{heading}[/dim]")
+
+    def show_cli_mode_warning(self, cli_name: str) -> None:
+        max_turns = __import__("os").environ.get("FAULTLINE_CLI_MAX_TURNS", "12")
+        self.console.print(
+            f"  [bold cyan]~[/bold cyan] [dim]Using {cli_name} CLI in multi-turn mode "
+            f"(up to {max_turns} turns). Set FAULTLINE_CLI_MAX_TURNS to override.[/dim]"
+        )
 
 
 # ---------------------------------------------------------------------------

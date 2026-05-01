@@ -111,9 +111,53 @@ The `SiegeEngine` (`skills/attacker.py`) handles async HTTP load but does not ye
 - Add the ranked findings report generator — this is the primary output of the step.
 - Gate all live attacks behind the Vault authorization check so the system cannot be pointed at an unauthorized target.
 
+## Per-Run Audit Trail & Production-Readiness Tracking
+
+Every `python faultline.py` invocation creates a unique, isolated output folder:
+
+```
+reports/
+  <project_name>_<YYYYMMDD>_<HHMMSS>/
+    pipeline_report.md      ← deterministic findings: syntax, imports, deps, AST roots
+    campaign_agent.log      ← full step-by-step agent reasoning (debug trail)
+    agent_report.md         ← AI-authored vulnerability report (written by the agent)
+    testcases/
+      api_test_<HHMMSS>.py  ← boilerplate copy, edited by the agent for this project
+      model_test_<HHMMSS>.py
+```
+
+### Production-Readiness Score
+
+The pipeline report opens with a **Production-Readiness Score (0–100)**. The formula is purely deterministic — no LLM text anywhere in the calculation:
+
+```
+score = 100 − Σ(penalty per finding)
+  critical → −20   high → −10   medium → −4   low → −2
+  (capped at 0)
+```
+
+The score is displayed as an ASCII gauge: `` `████████░░  84/100` ``
+
+### Tracking Improvement Over Time
+
+Because each run gets its own timestamped folder, operators can:
+
+1. Run Faultline, see the score and findings.
+2. Fix the issues that the report flags (syntax errors, missing imports, security candidates).
+3. Re-run Faultline. The new score in the new report shows measurable progress.
+4. Continue iterating until the score reaches an acceptable threshold and the Next Steps checklist is clear.
+
+The `reports/` directory becomes a time-series log of the project's health, making it straightforward to hand off to a team, include in a PR, or track across sprints.
+
+### Boilerplate-Driven Test Generation
+
+Rather than having the agent write test files from scratch (expensive on output tokens, hard to validate), the agent calls `copy_test_boilerplate` to get a working, structurally-correct starting file, then edits only the parts specific to this project's endpoints or models. This keeps generated files readable, keeps costs low, and keeps human reviewers in control of the test structure.
+
+---
+
 ## Conclusion
 
-Faultline's architecture (Pipeline Mode + Agent Mode) successfully provides the scaffolding for this 7-step vision. The deterministic pipeline handles Steps 1-3 perfectly, while the LangGraph agent orchestrates Steps 4, 5, and 7.
+Faultline's architecture (Pipeline Mode + Agent Mode) successfully provides the scaffolding for this 7-step vision. The deterministic pipeline handles Steps 1-3 perfectly, while the LangGraph agent orchestrates Steps 4, 5, and 7. The per-run folder and production-readiness score give operators a clear, repeatable loop for tracking improvement over time.
 
 The next three concrete milestones are:
 1. **Extend `SemanticIndexer` to embed docstrings** — places code and docs in the same vector space, enabling the contract verification pass that closes Step 5.

@@ -1,24 +1,59 @@
 import json
+from datetime import datetime
 from pathlib import Path
-from typing import Dict
+from typing import Dict, List, Optional
 
 from core.tools import analyze_project_structure, index_project_documentation
 from skills.deterministic_checker import DeterministicChecker
+from skills.graph_3d import Graph3DGenerator
+
+
+# Ordered categories for report grouping
+_CATEGORY_ORDER = ["syntax", "runtime", "api", "semantic", "security_candidate"]
+
+# Rule-based next-steps: category → checklist item
+_NEXT_STEPS = {
+    "syntax": "Fix all syntax errors — nothing else can run until Python can parse the files.",
+    "runtime": "Resolve missing imports and dependency conflicts — run `pip install -r requirements.txt` in the target venv.",
+    "api": "Investigate API-level issues surfaced by the AST scan before writing functional tests.",
+    "semantic": "Address semantic mismatches between documentation intent and implementation.",
+    "security_candidate": "Review security candidates with a human eye before the chaos-testing phase.",
+}
+
+
+def _severity_gauge(score: int, max_score: int = 100) -> str:
+    """ASCII progress bar, e.g. `████████░░  84/100`."""
+    pct = max(0, min(score, max_score))
+    filled = round(pct / 10)
+    bar = "█" * filled + "░" * (10 - filled)
+    return f"`{bar}  {pct}/{max_score}`"
+
+
+def _score_from_findings(findings: List[Dict]) -> int:
+    weights = {"critical": 10, "high": 5, "medium": 2, "low": 1}
+    penalty = sum(weights.get(f.get("severity", "medium"), 2) for f in findings)
+    return max(0, 100 - min(penalty * 2, 100))
 
 
 class PipelineRunner:
     """Deterministic-first Faultline runner.
 
-    This gives the CLI and API a predictable baseline while the agent-first
-    workflow remains available for model-led investigation.
+    Runs syntax/import/lint/dependency checks then writes a fully
+    deterministic Markdown report — no LLM text anywhere in the output.
     """
 
-    def __init__(self, target_dir: str, reports_dir: str = "reports"):
+    def __init__(self, target_dir: str, run_folder: Optional[Path] = None, reports_dir: str = "reports"):
         self.target_dir = str(Path(target_dir).expanduser().resolve())
-        self.reports_dir = Path(reports_dir)
-        self.reports_dir.mkdir(parents=True, exist_ok=True)
+        # If a per-run folder is provided, write there; otherwise fall back to flat reports/.
+        if run_folder is not None:
+            self.run_folder = Path(run_folder)
+        else:
+            self.run_folder = Path(reports_dir)
+        self.run_folder.mkdir(parents=True, exist_ok=True)
 
     def run(self, include_semantic: bool = True, renderer=None) -> Dict:
+        started_at = datetime.now()
+
         if renderer:
             renderer.show_pipeline_step("Deterministic Checks", "running")
         deterministic = DeterministicChecker(self.target_dir).run_all()
@@ -34,13 +69,47 @@ class PipelineRunner:
         except Exception:
             structure = {"files": {}, "dependencies": []}
 
+        graph_html_path = ""
         if renderer:
-            file_count = len(structure.get("files", {}))
-            dep_count = len(structure.get("dependencies", []))
+            file_count  = len(structure.get("files", {}))
+            dep_count   = len(structure.get("dependencies", []))
+            call_count  = len(structure.get("call_edges", []))
+            inh_count   = len(structure.get("inheritance_edges", []))
             renderer.show_pipeline_step(
                 "AST Dependency Graph", "done",
-                detail=f"{file_count} files, {dep_count} dependencies"
+                detail=(
+                    f"{file_count} files, {dep_count} import edges, "
+                    f"{call_count} call edges, {inh_count} inheritance edges"
+                ),
             )
+            renderer.show_pipeline_step("3D Graph", "running")
+
+        try:
+            graph_html_path = Graph3DGenerator().generate(
+                structure,
+                str(self.run_folder / "dependency_graph.py"),
+            )
+            if renderer:
+                renderer.show_pipeline_step(
+                    "3D Graph", "done",
+                    detail=f"run with: python {graph_html_path}",
+                )
+        except Exception as exc:
+            if renderer:
+                renderer.show_pipeline_step("3D Graph", "error", detail=str(exc))
+
+        # Save serializer schemas for the Step-4 agent to use
+        schemas = structure.get("serializer_schemas", [])
+        if schemas:
+            schema_path = self.run_folder / "api_schemas.json"
+            schema_path.write_text(
+                json.dumps(schemas, indent=2), encoding="utf-8"
+            )
+            if renderer:
+                renderer.show_pipeline_step(
+                    "API Schema Export", "done",
+                    detail=f"{len(schemas)} serializer(s) → api_schemas.json",
+                )
 
         semantic = {"status": "skipped"}
         if include_semantic and any(Path(self.target_dir).rglob("*.md")):
@@ -58,14 +127,21 @@ class PipelineRunner:
                 detail="no markdown docs found" if include_semantic else "disabled"
             )
 
+        elapsed = (datetime.now() - started_at).total_seconds()
+
         report = {
             "mode": "pipeline-first",
             "target_dir": self.target_dir,
+            "run_folder": str(self.run_folder),
+            "elapsed_seconds": round(elapsed, 1),
             "stages": {
                 "deterministic_checks": deterministic,
                 "dependency_graph": {
-                    "files": len(structure.get("files", {})),
-                    "dependencies": len(structure.get("dependencies", [])),
+                    "files":         len(structure.get("files", {})),
+                    "dependencies":  len(structure.get("dependencies", [])),
+                    "call_edges":    len(structure.get("call_edges", [])),
+                    "inheritance_edges": len(structure.get("inheritance_edges", [])),
+                    "graph_viewer_py": graph_html_path,
                 },
                 "semantic_indexing": semantic,
                 "agentic_api_tests": {"status": "available_in_agent_or_hybrid_mode"},
@@ -76,49 +152,134 @@ class PipelineRunner:
         report["report_path"] = self.write_report(report)
         return report
 
+    # ------------------------------------------------------------------
+    # Deterministic report — zero LLM text
+    # ------------------------------------------------------------------
+
     def write_report(self, report: Dict) -> str:
-        path = self.reports_dir / "pipeline_report.md"
+        path = self.run_folder / "pipeline_report.md"
         det = report["stages"]["deterministic_checks"]
-        lines = [
+        findings: List[Dict] = det.get("findings", [])
+        summary = det.get("summary", {})
+        roots = det.get("dependency_root_causes", [])
+
+        score = _score_from_findings(findings)
+        total = summary.get("total_findings", 0)
+        high_crit = summary.get("high_or_critical", 0)
+        elapsed = report.get("elapsed_seconds", 0)
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        lines: List[str] = [
             "# Faultline Pipeline Report",
             "",
-            f"- Mode: {report['mode']}",
-            f"- Target: `{report['target_dir']}`",
-            f"- Findings: {det['summary']['total_findings']}",
-            f"- High/Critical: {det['summary']['high_or_critical']}",
-            "",
-            "## Deterministic Findings",
+            f"- **Target:** `{report['target_dir']}`",
+            f"- **Run folder:** `{report['run_folder']}`",
+            f"- **Generated:** {now}",
+            f"- **Duration:** {elapsed}s",
             "",
         ]
-        if det["findings"]:
-            for finding in det["findings"]:
-                location = finding.get("file_path") or "project"
-                if finding.get("line_number"):
-                    location += f":{finding['line_number']}"
-                lines.extend([
-                    f"### {finding['title']}",
-                    "",
-                    f"- Severity: {finding['severity']}",
-                    f"- Category: {finding['category']}",
-                    f"- Location: {location}",
-                    "",
-                    finding.get("summary") or "",
-                    "",
-                    "Suggested fix:",
-                    "",
-                    finding.get("suggested_fix") or "Inspect the evidence and fix the underlying issue.",
-                    "",
-                ])
-        else:
-            lines.append("No deterministic findings.")
 
-        lines.extend(["", "## Dependency Root Causes", ""])
-        roots = det["dependency_root_causes"]
-        if roots:
-            for root in roots:
-                lines.append(f"- `{root['root_file']}` impacts {root['impact_count']} dependent file(s).")
+        # --- Executive summary ---
+        lines += [
+            "## Executive Summary",
+            "",
+            f"| Metric | Value |",
+            f"| --- | --- |",
+            f"| Total findings | {total} |",
+            f"| High / Critical | {high_crit} |",
+            f"| Files mapped | {report['stages']['dependency_graph']['files']} |",
+            f"| Dependencies mapped | {report['stages']['dependency_graph']['dependencies']} |",
+            f"| Semantic indexing | {report['stages']['semantic_indexing']['status']} |",
+            f"| Production-readiness score | {score}/100 |",
+            "",
+        ]
+
+        # --- Production-readiness gauge ---
+        lines += [
+            "## Production-Readiness Score",
+            "",
+            _severity_gauge(score),
+            "",
+            "> Score starts at 100 and loses points per finding (critical −20, high −10, medium −4, low −2), capped at 0.",
+            "",
+        ]
+
+        # --- Severity distribution ---
+        sev_counts: Dict[str, int] = {}
+        for f in findings:
+            sev_counts[f.get("severity", "medium")] = sev_counts.get(f.get("severity", "medium"), 0) + 1
+
+        lines += [
+            "## Severity Distribution",
+            "",
+            "| Severity | Count |",
+            "| --- | --- |",
+            f"| 🔴 Critical | {sev_counts.get('critical', 0)} |",
+            f"| 🟠 High | {sev_counts.get('high', 0)} |",
+            f"| 🟡 Medium | {sev_counts.get('medium', 0)} |",
+            f"| 🔵 Low | {sev_counts.get('low', 0)} |",
+            "",
+        ]
+
+        # --- Findings by category ---
+        lines += ["## Findings by Category", ""]
+        by_category: Dict[str, List[Dict]] = {}
+        for f in findings:
+            cat = f.get("category", "runtime")
+            by_category.setdefault(cat, []).append(f)
+
+        ordered_cats = [c for c in _CATEGORY_ORDER if c in by_category]
+        ordered_cats += [c for c in by_category if c not in ordered_cats]
+
+        if not findings:
+            lines.append("No deterministic findings — project passes all baseline checks.")
         else:
-            lines.append("No dependency failure propagation detected.")
+            for cat in ordered_cats:
+                cat_findings = by_category[cat]
+                lines += [f"### {cat.replace('_', ' ').title()} ({len(cat_findings)})", ""]
+                for f in cat_findings:
+                    location = f.get("file_path") or "project-level"
+                    if f.get("line_number"):
+                        location += f":{f['line_number']}"
+                    sev = f.get("severity", "medium").upper()
+                    lines += [
+                        f"#### [{sev}] {f['title']}",
+                        "",
+                        f"- **Location:** `{location}`",
+                        f"- **Summary:** {f.get('summary', '')}",
+                    ]
+                    if f.get("suggested_fix"):
+                        lines.append(f"- **Fix:** {f['suggested_fix']}")
+                    lines.append("")
+
+        # --- AST dependency root causes ---
+        lines += ["## AST Dependency Root Causes", ""]
+        if roots:
+            lines += [
+                "Files whose failure propagates to the most dependents (fix these first):",
+                "",
+                "| Root File | Impacted Files |",
+                "| --- | --- |",
+            ]
+            for root in roots:
+                lines.append(f"| `{root['root_file']}` | {root['impact_count']} |")
+            lines.append("")
+        else:
+            lines += ["No dependency failure propagation detected.", ""]
+
+        # --- Next steps checklist ---
+        lines += ["## Next Steps", ""]
+        present_categories = set(by_category.keys())
+        checklist = [_NEXT_STEPS[c] for c in _CATEGORY_ORDER if c in present_categories and c in _NEXT_STEPS]
+        if not checklist:
+            lines.append("- All baseline checks passed. Proceed to the agent phase for API and chaos testing.")
+        else:
+            for item in checklist:
+                lines.append(f"- [ ] {item}")
+        lines += [
+            "- [ ] Re-run `python faultline.py --mode pipeline` after fixes to verify the score improved.",
+            "",
+        ]
 
         path.write_text("\n".join(lines), encoding="utf-8")
         return str(path)
