@@ -15,7 +15,9 @@ the initial prompt so the agent knows exactly what was already done.
 from __future__ import annotations
 
 import asyncio
+import json
 import re
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -54,7 +56,9 @@ class LiveReport:
         pipeline_report_path: str = "",
     ) -> None:
         self.path = Path(run_folder) / "live_report.md"
+        self.jsonl_path = Path(run_folder) / "findings.jsonl"
         self._lock = asyncio.Lock()
+        self._sync_lock = threading.Lock()
 
         # Only create the file if it doesn't exist — preserve it across resume
         if not self.path.exists():
@@ -98,11 +102,67 @@ class LiveReport:
         block += "\n---\n"
 
         await self._append(block)
+        self._append_jsonl(finding)
+
+    def append_finding_sync(self, finding: dict) -> None:
+        """
+        Synchronous append — safe to call from sync code (LangGraph @tool wrappers).
+        Mirrors append_finding() but uses a threading.Lock and blocking I/O so the
+        write is guaranteed to land on disk before the caller returns.
+        """
+        ts = datetime.now().strftime("%H:%M:%S")
+        sev = (finding.get("severity") or "UNKNOWN").upper()
+        title = finding.get("title", "Untitled")
+        fp = finding.get("file_path", "") or "N/A"
+        ln = finding.get("line_number", "")
+        loc = f"{fp}:{ln}" if ln else fp
+
+        block = (
+            f"\n### [{sev}] {title} — {ts}\n\n"
+            f"- **Category:** {finding.get('category', '')}\n"
+            f"- **Location:** {loc}\n"
+            f"- **Summary:** {finding.get('summary', '')}\n"
+        )
+        if finding.get("evidence"):
+            block += f"- **Evidence:** {finding['evidence']}\n"
+        if finding.get("reproduction_steps"):
+            block += f"- **Reproduce:** {finding['reproduction_steps']}\n"
+        if finding.get("suggested_fix"):
+            block += f"- **Fix:** {finding['suggested_fix']}\n"
+        block += "\n---\n"
+
+        with self._sync_lock:
+            with open(self.path, "a", encoding="utf-8") as f:
+                f.write(block)
+                f.flush()
+        self._append_jsonl(finding)
+
+    def _append_jsonl(self, finding: dict) -> None:
+        """Append a single finding as a JSON line for machine consumption."""
+        record = {
+            "ts": datetime.now().isoformat(timespec="seconds"),
+            **finding,
+        }
+        try:
+            with self._sync_lock:
+                with open(self.jsonl_path, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(record, ensure_ascii=False) + "\n")
+                    f.flush()
+        except Exception:
+            pass
 
     async def append_section(self, heading: str, content: str) -> None:
         """Append a freeform section (agent synthesis, session end, etc.)."""
         block = f"\n## {heading}\n\n{content}\n\n---\n"
         await self._append(block)
+
+    def append_section_sync(self, heading: str, content: str) -> None:
+        """Synchronous variant of append_section — safe to call from sync code."""
+        block = f"\n## {heading}\n\n{content}\n\n---\n"
+        with self._sync_lock:
+            with open(self.path, "a", encoding="utf-8") as f:
+                f.write(block)
+                f.flush()
 
     async def append_session_end(self, turn: int, reason: str = "completed") -> None:
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")

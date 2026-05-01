@@ -16,7 +16,9 @@ Used by faultline.py to surface real-time agent activity:
 All renderer methods are no-ops when invoked without a Console (defensive).
 """
 
+import os
 import re
+import sys
 import time
 from typing import Optional, Union, List
 
@@ -24,6 +26,7 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.rule import Rule
+from rich.table import Table
 from rich.text import Text
 
 
@@ -57,6 +60,7 @@ TOOL_ICONS = {
     "request_user_input": "👤",
     "retrieve_stored_content": "📦",
     "copy_test_boilerplate": "📋",
+    "discover_api_schema": "🌐",
 }
 
 
@@ -81,8 +85,9 @@ def _coerce_text(content: Union[str, list, None]) -> str:
 
 
 class CLIRenderer:
-    def __init__(self, console: Optional[Console] = None):
+    def __init__(self, console: Optional[Console] = None, quiet: bool = False):
         self.console = console or Console()
+        self.quiet = quiet
         self._tool_call_count = 0
         self._phase_start: Optional[float] = None
         self._current_plan: Optional[str] = None
@@ -104,6 +109,49 @@ class CLIRenderer:
             padding=(1, 2),
         ))
 
+    def show_startup_dashboard(
+        self,
+        target_dir: str,
+        target_url: str,
+        mode: str,
+        run_folder: str,
+        session_id: str = "",
+        model: str = "",
+        budget_str: str = "",
+        auth_status: str = "",
+    ) -> None:
+        """Consolidated startup dashboard — replaces scattered banner/info prints."""
+        table = Table(
+            show_header=False,
+            border_style="cyan",
+            title="[bold cyan]FAULTLINE[/bold cyan] [dim]interactive cli[/dim]",
+            padding=(0, 2),
+            expand=False,
+            min_width=60,
+        )
+        table.add_column("key", style="bold", width=12)
+        table.add_column("value")
+
+        table.add_row("Target", target_dir)
+        table.add_row("URL", target_url or "[dim]none[/dim]")
+        table.add_row("Mode", f"[magenta]{mode}[/magenta]")
+        if model:
+            table.add_row("Model", f"[cyan]{model}[/cyan]")
+        if budget_str:
+            table.add_row("Budget", f"[dim]{budget_str}[/dim]")
+        if auth_status:
+            table.add_row("Auth", auth_status)
+        table.add_row("Run", f"[bold]{run_folder}[/bold]")
+        if session_id:
+            table.add_row("Session", f"[dim]{session_id}[/dim]")
+
+        self.console.print()
+        self.console.print(table)
+        self.console.print(
+            "  [dim]Press [bold cyan]Esc[/bold cyan] at any time to "
+            "pause and steer the agent.[/dim]\n"
+        )
+
     def show_run_folder(self, path: str) -> None:
         self.console.print(
             f"  [bold green]Run folder:[/bold green] [bold]{path}[/bold]\n"
@@ -116,12 +164,96 @@ class CLIRenderer:
             "  [dim]Press [bold cyan]Esc[/bold cyan] at any time to pause and steer the agent.[/dim]\n"
         )
 
-    def show_complete(self, report_path: str = "") -> None:
+    def show_campaign_estimate(
+        self,
+        endpoint_count: int = 0,
+        auth_endpoints: int = 0,
+        file_count: int = 0,
+        max_turns: int = 40,
+        schema_found: bool = False,
+    ) -> None:
+        """
+        Show a brief difficulty / scope estimate before the agent starts.
+        Helps the operator set expectations for campaign duration.
+        """
+        # Estimate complexity
+        if endpoint_count > 30 or file_count > 100:
+            complexity = "[red]HIGH[/red]"
+            est_minutes = "20-40"
+        elif endpoint_count > 10 or file_count > 40:
+            complexity = "[yellow]MEDIUM[/yellow]"
+            est_minutes = "10-25"
+        else:
+            complexity = "[green]LOW[/green]"
+            est_minutes = "5-15"
+
+        body_parts = []
+        if endpoint_count:
+            auth_note = f" ({auth_endpoints} authenticated)" if auth_endpoints else ""
+            body_parts.append(f"  Endpoints: [bold]{endpoint_count}[/bold]{auth_note}")
+        if file_count:
+            body_parts.append(f"  Source files: [bold]{file_count}[/bold]")
+        body_parts.append(f"  Estimated complexity: {complexity}")
+        body_parts.append(f"  Budget: [bold]{max_turns}[/bold] turns (~{est_minutes} minutes)")
+        if schema_found:
+            body_parts.append("  Schema: [green]OK[/green] OpenAPI discovered")
+        else:
+            body_parts.append("  Schema: [dim]not found (agent will discover manually)[/dim]")
+
+        self.console.print(Panel(
+            "\n".join(body_parts),
+            title="[bold yellow]Campaign Estimate[/bold yellow]",
+            border_style="yellow",
+            padding=(0, 1),
+        ))
+
+    def show_complete(self, report_path: str = "", auto_open: bool = False) -> None:
         body = "[bold green]Campaign complete.[/bold green]"
         if report_path:
             body += f"\n[dim]Report:[/dim] {report_path}"
         body += f"\n[dim]Tool calls observed:[/dim] {self._tool_call_count}"
         self.console.print(Panel(body, border_style="green", padding=(1, 2)))
+        # Terminal bell — notify operator that campaign is done
+        sys.stdout.write("\a")
+        sys.stdout.flush()
+        # Auto-open report if requested
+        if auto_open and report_path:
+            self._open_report(report_path)
+
+    def _open_report(self, report_path: str) -> None:
+        """Open the campaign report in the default application."""
+        import webbrowser
+        from pathlib import Path
+
+        rp = Path(report_path)
+
+        # Try known report files in preference order
+        candidates = [
+            rp / "agent_report.md",
+            rp / "agent_report.html",
+            rp / "live_report.md",
+            rp / "pipeline_report.md",
+        ]
+        # If report_path is itself a file, open it directly
+        if rp.is_file():
+            target = rp
+        else:
+            target = next((c for c in candidates if c.exists()), None)
+
+        if target:
+            try:
+                webbrowser.open(str(target.resolve().as_uri()))
+                self.console.print(
+                    f"  [green]+[/green] Opened report: [bold]{target.name}[/bold]"
+                )
+            except Exception as exc:
+                self.console.print(
+                    f"  [dim yellow]Could not auto-open report: {exc}[/dim yellow]"
+                )
+        else:
+            self.console.print(
+                f"  [dim]No report file found in {report_path} to auto-open.[/dim]"
+            )
 
     def show_checkpoint_saved(self, path: str, turn: int = 0) -> None:
         """Confirmation when checkpoint is written."""
@@ -177,6 +309,9 @@ class CLIRenderer:
         text = _coerce_text(content).strip()
         if not text:
             return
+        # Quiet mode: suppress agent reasoning panels entirely
+        if self.quiet:
+            return
 
         # Check for plan/checklist in the response
         if any(marker in text.lower() for marker in ["## plan", "## checklist", "- [ ]", "- [x]"]):
@@ -206,6 +341,13 @@ class CLIRenderer:
 
     def show_tool_result(self, tool_name: str, result_summary: str = "") -> None:
         """Show tool result — longer display for important tools."""
+        # Quiet mode: show only one-line summary for all tools
+        if self.quiet:
+            text = (result_summary or "").strip()
+            oneline = text[:120].replace("\n", " ") if text else "(no output)"
+            self.console.print(f"  [green]<[/green] [dim]{oneline}[/dim]")
+            return
+
         text = (result_summary or "").strip()
         icon = TOOL_ICONS.get(tool_name, "⚡")
 
@@ -262,6 +404,13 @@ class CLIRenderer:
         token_pct: int, findings: int, elapsed_str: str = "",
     ) -> None:
         """Show a compact progress summary line between agent turns."""
+        # Update terminal title bar so operator can see status from any window
+        title = f"Faultline │ Turn {turn}/{max_turns} │ {findings} findings │ {token_pct}% tokens"
+        if elapsed_str:
+            title += f" │ {elapsed_str}"
+        sys.stdout.write(f"\033]0;{title}\007")
+        sys.stdout.flush()
+
         # Build visual progress bar for token usage
         bar_width = 20
         filled = int(bar_width * min(token_pct, 100) / 100)

@@ -149,14 +149,19 @@ class InputHandler:
     def __init__(self, console: Optional[Console] = None):
         self.console = console or Console()
         self.pause_requested = asyncio.Event()
+        # halt_requested signals the agent loop to terminate the campaign
+        # entirely (operator pressed ESC inside the steering room or chose /quit).
+        # Distinct from pause_requested which only opens the steering menu.
+        self.halt_requested = asyncio.Event()
         self._poll_task: Optional[asyncio.Task] = None
         self._stopped = False
 
     def start(self) -> None:
-        """Start the background key-polling task."""
+        """Start the background key-polling task. Idempotent."""
         self._stopped = False
         self.pause_requested.clear()
-        self._poll_task = asyncio.create_task(self._poll_loop())
+        if self._poll_task is None or self._poll_task.done():
+            self._poll_task = asyncio.create_task(self._poll_loop())
 
     def stop(self) -> None:
         """Stop the background polling."""
@@ -240,16 +245,22 @@ class InputHandler:
             "  [cyan]/resume[/cyan]          Continue the campaign\n"
             "  [cyan]/quit[/cyan]            Save checkpoint and exit\n"
             "  [cyan]/help[/cyan]            Show this menu\n\n"
-            "[dim]Or just type a message to steer the agent.[/dim]",
+            "[dim]Or just type a message to steer the agent.[/dim]\n"
+            "[dim]Press Esc again here to halt the campaign.[/dim]",
             title="[bold yellow]⏸  PAUSED[/bold yellow]",
             border_style="yellow",
             padding=(1, 2),
         ))
 
         while True:
-            try:
-                raw = Prompt.ask("[yellow]faultline[/yellow]")
-            except (EOFError, KeyboardInterrupt):
+            raw = self._read_steering_input()
+            if raw is None:
+                # ESC / Ctrl-C / EOF inside the steering room → halt the campaign.
+                self.halt_requested.set()
+                self.console.print(
+                    "  [yellow]ESC pressed — halting campaign. "
+                    "Checkpoint will be saved; rerun without --resume to start fresh.[/yellow]"
+                )
                 return SteeringAction(ActionType.QUIT)
 
             action = parse_slash_command(raw)
@@ -275,6 +286,31 @@ class InputHandler:
 
             # All other actions (resume, quit, skip, save, steer with text) → return
             return action
+
+    def _read_steering_input(self) -> Optional[str]:
+        """
+        Read one line from the operator. Returns None if the operator pressed
+        ESC, Ctrl-C, or hit EOF — caller should treat that as a halt signal.
+
+        Prefers questionary (ESC is distinguishable from text input). Falls
+        back to rich's Prompt.ask if questionary isn't available.
+        """
+        try:
+            import questionary
+            answer = questionary.text(
+                "faultline >",
+                qmark="",
+            ).ask()
+            if answer is None:
+                return None
+            return answer
+        except ImportError:
+            try:
+                return Prompt.ask("[yellow]faultline[/yellow]")
+            except (EOFError, KeyboardInterrupt):
+                return None
+        except (EOFError, KeyboardInterrupt):
+            return None
 
     def _show_help(self) -> None:
         """Print the help panel."""
@@ -308,11 +344,45 @@ class InputHandler:
         from core.model_registry import list_models, find_model, format_model_list
 
         if not action.model_value:
-            # List all models
+            # Try arrow-key + Enter selection via questionary; fall back to
+            # listing models for text-based selection if questionary isn't
+            # available or the operator dismisses the picker (ESC).
+            try:
+                import questionary
+                models = list_models()
+                if models:
+                    choices = [
+                        questionary.Choice(
+                            title=f"{m.name}  —  {m.value}",
+                            value=m.value,
+                        )
+                        for m in models
+                    ]
+                    selected = questionary.select(
+                        "Pick a model (↑/↓ to navigate, Enter to select, Esc to cancel):",
+                        choices=choices,
+                    ).ask()
+                    if selected is None:
+                        self.console.print(
+                            "  [dim]Selection cancelled — agent will continue with current model.[/dim]"
+                        )
+                        return SteeringAction(ActionType.HELP)  # stay in loop
+                    m = find_model(selected)
+                    if m:
+                        self.console.print(
+                            f"  [green]✓[/green] Switching to [bold]{m.name}[/bold] "
+                            f"([dim]{m.value}[/dim]) on next turn"
+                        )
+                        return SteeringAction(ActionType.MODEL, model_value=m.value)
+            except ImportError:
+                pass
+            except Exception as _e:
+                logger.warning("questionary picker failed (%s), falling back to text list", _e)
+
+            # Fallback: print the list and let the operator type a name/number
             self.console.print(f"\n[bold]Available Models:[/bold]\n")
             self.console.print(format_model_list())
             self.console.print("\n[dim]  Usage: /model <name or number>[/dim]\n")
-            # Don't return — stay in steering room
             return SteeringAction(ActionType.HELP)  # Signal to continue loop
 
         query = action.model_value.strip()

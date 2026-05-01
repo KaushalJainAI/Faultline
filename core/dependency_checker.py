@@ -8,7 +8,9 @@ from typing import Dict, List, Tuple, Optional
 logger = logging.getLogger("DependencyChecker")
 
 # Candidate venv directory names to search in the target project
-_VENV_NAMES = ("venv", ".venv", "env", ".env", "virtualenv")
+_VENV_NAMES = ("venv", ".venv", "env", ".env", "virtualenv", ".virtualenv", "pyenv")
+# Subdirectories worth searching one level deep (common for monorepos)
+_SUBDIRS_TO_SEARCH = ("backend", "server", "api", "app", "src", "service")
 
 
 class DependencyChecker:
@@ -16,6 +18,16 @@ class DependencyChecker:
     Validates that required packages are installed.
     When given a target_dir, checks the target project's own venv instead
     of Faultline's venv, so dependencies are validated in the right environment.
+
+    Resolution order:
+      1. Explicit `target_venv` argument (e.g. from --target-venv)
+      2. Target project venv (top-level + common subdirs + glob *venv*)
+      3. VIRTUAL_ENV environment variable
+      4. sys.executable (Faultline's own interpreter)
+
+    When (1)/(2) fail and a target_dir was given, the checker returns the
+    "UNKNOWN" status from check_dependencies() instead of falsely reporting
+    missing packages — see `target_introspectable`.
     """
 
     TEST_DEPENDENCIES = {
@@ -31,8 +43,19 @@ class DependencyChecker:
         "model":        ["pytest", "pytest-django", "django"],
     }
 
-    def __init__(self, target_dir: Optional[str] = None):
+    def __init__(
+        self,
+        target_dir: Optional[str] = None,
+        target_venv: Optional[str] = None,
+    ):
         self.target_dir = str(Path(target_dir).resolve()) if target_dir else None
+        self.target_venv_override = (
+            str(Path(target_venv).resolve()) if target_venv else None
+        )
+        # True when the resolved interpreter is the target project's environment.
+        # When False *and* a target_dir was given, we treat dependency checks as
+        # UNKNOWN rather than falsely reporting missing packages.
+        self.target_introspectable: bool = False
         self.python_executable = self._resolve_python()
         self.venv_path = self._detected_venv
         self.installed_packages = self._get_installed_packages()
@@ -43,40 +66,100 @@ class DependencyChecker:
         """
         Find the best Python executable to use for package checks.
         Priority:
-          1. Target project's venv (if target_dir given and venv found)
-          2. VIRTUAL_ENV env var (current activated venv)
-          3. sys.executable (whatever's running Faultline)
+          1. Explicit target_venv override
+          2. Target project's venv (if target_dir given and venv found)
+          3. VIRTUAL_ENV env var (current activated venv)
+          4. sys.executable (whatever's running Faultline)
         """
+        # 1. Explicit override
+        if self.target_venv_override:
+            python = self._python_in_venv(Path(self.target_venv_override))
+            if python:
+                logger.info("DependencyChecker using --target-venv: %s", python)
+                self._detected_venv = Path(self.target_venv_override)
+                self.target_introspectable = True
+                return python
+            logger.warning(
+                "--target-venv path %s has no python executable; falling back",
+                self.target_venv_override,
+            )
+
+        # 2. Target project venv
         if self.target_dir:
             python = self._find_target_venv_python(Path(self.target_dir))
             if python:
                 logger.info("DependencyChecker using target venv: %s", python)
                 self._detected_venv = self._python_to_venv(python)
+                self.target_introspectable = True
                 return python
 
-        # Fall back: current activated venv or system Python
+        # 3. Current activated venv
         venv_env = os.getenv("VIRTUAL_ENV")
         if venv_env:
             python = self._python_in_venv(Path(venv_env))
             if python:
                 self._detected_venv = Path(venv_env)
+                # Only count as introspectable when no separate target was specified
+                self.target_introspectable = self.target_dir is None
+                logger.info(
+                    "DependencyChecker using VIRTUAL_ENV: %s "
+                    "(target_introspectable=%s)",
+                    python, self.target_introspectable,
+                )
                 return python
 
+        # 4. Faultline's own python — last resort
         if hasattr(sys, "base_prefix") and sys.prefix != sys.base_prefix:
             self._detected_venv = Path(sys.prefix)
         else:
             self._detected_venv = None
 
+        if self.target_dir:
+            logger.warning(
+                "Could not locate target venv under %s; falling back to %s. "
+                "Dependency checks will be reported as UNKNOWN.",
+                self.target_dir, sys.executable,
+            )
         return sys.executable
 
     def _find_target_venv_python(self, target: Path) -> Optional[str]:
-        """Search target directory for a venv and return its Python executable."""
+        """
+        Search target directory for a venv and return its Python executable.
+        Looks at:
+          - <target>/<venv-name>
+          - <target>/<common-subdir>/<venv-name>
+          - <target>/*venv* (one-level glob)
+        """
+        # Top-level by exact name
         for name in _VENV_NAMES:
             candidate = target / name
             if candidate.is_dir():
                 python = self._python_in_venv(candidate)
                 if python:
                     return python
+
+        # Common subdirectories (monorepo layouts)
+        for sub in _SUBDIRS_TO_SEARCH:
+            sub_dir = target / sub
+            if not sub_dir.is_dir():
+                continue
+            for name in _VENV_NAMES:
+                candidate = sub_dir / name
+                if candidate.is_dir():
+                    python = self._python_in_venv(candidate)
+                    if python:
+                        return python
+
+        # Glob fallback: anything top-level matching *venv*
+        try:
+            for candidate in target.glob("*venv*"):
+                if candidate.is_dir():
+                    python = self._python_in_venv(candidate)
+                    if python:
+                        return python
+        except Exception:
+            pass
+
         return None
 
     @staticmethod
@@ -122,6 +205,16 @@ class DependencyChecker:
         test_type: str,
         raise_on_missing: bool = False,
     ) -> Tuple[bool, List[str], List[str]]:
+        """
+        Returns (ok, installed, missing). When the target project's environment
+        could not be introspected, returns (True, [], []) — caller should treat
+        this as UNKNOWN (see `is_target_introspectable()`).
+        """
+        if self.target_dir and not self.target_introspectable:
+            # We have no reliable view of the target's installed packages,
+            # so do not block the agent on a guess.
+            return True, [], []
+
         required = self.TEST_DEPENDENCIES.get(test_type, [])
         missing, installed = [], []
         for package in required:
@@ -138,6 +231,10 @@ class DependencyChecker:
                 f"Install with: pip install {' '.join(missing)}"
             )
         return all_ok, installed, missing
+
+    def is_target_introspectable(self) -> bool:
+        """True when we are inspecting the target project's actual environment."""
+        return self.target_introspectable
 
     def check_all_dependencies(self) -> Dict[str, Tuple[bool, List[str], List[str]]]:
         return {t: self.check_dependencies(t) for t in self.TEST_DEPENDENCIES}
@@ -169,8 +266,23 @@ class DependencyChecker:
             "-" * 60,
             f"Environment: {self.venv_path or 'System Python'}",
             f"Python:      {self.python_executable}",
-            "",
         ]
+        if self.target_dir:
+            lines.append(f"Target:      {self.target_dir}")
+        lines.append("")
+
+        if self.target_dir and not self.target_introspectable:
+            lines.append(
+                "[UNKNOWN] Could not introspect the target project's environment "
+                "(no venv found under the target directory). Skipping enforcement; "
+                "assuming required packages are present in the runtime that will "
+                "execute the tests."
+            )
+            lines.append(
+                "Tip: pass --target-venv <path> to pin the interpreter explicitly."
+            )
+            return True, "\n".join(lines)
+
         if all_ok:
             lines.append("[OK] All dependencies installed:")
             lines.extend(f"  + {p}" for p in installed)

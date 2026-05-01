@@ -34,7 +34,7 @@ try:
 except ImportError:
     ChatGoogleGenerativeAI = None
 
-from core.prompts import SYSTEM_PROMPT
+from core.prompts import SYSTEM_PROMPT, VISION_REMINDER
 from core.tools import FAULTLINE_TOOLS
 from core.cli_provider import ProviderManager
 from core.provider_config import get_cli_provider_name, get_provider
@@ -45,6 +45,28 @@ from core.progress_tracker import ProgressTracker
 logger = logging.getLogger("AegisAgent")
 
 CALL_TIMEOUT_S: int = int(os.environ.get("FAULTLINE_CALL_TIMEOUT", "300"))
+
+
+def _recent_step_coverage(run_folder: str) -> str:
+    """Read vision_step values from findings.jsonl to feed back to the agent."""
+    if not run_folder:
+        return "none yet"
+    p = Path(run_folder) / "findings.jsonl"
+    if not p.exists():
+        return "none yet"
+    steps = set()
+    try:
+        for line in p.read_text(encoding="utf-8").splitlines()[-100:]:
+            try:
+                d = json.loads(line)
+                step = d.get("vision_step")
+                if isinstance(step, int):
+                    steps.add(step)
+            except Exception:
+                pass
+    except Exception:
+        return "none yet"
+    return ", ".join(str(s) for s in sorted(steps)) if steps else "none yet"
 
 
 # ---------------------------------------------------------------------------
@@ -112,6 +134,22 @@ async def _stream_with_timeout(model, messages, timeout: int, run_folder: str):
         from langchain_core.messages import AIMessage as _AIMsg
         merged = _AIMsg(content="")
 
+    # SiliconFlow (and some OpenRouter) thinking-mode models return
+    # reasoning_content alongside content. When present, it MUST be echoed
+    # back verbatim on the next API call or SiliconFlow raises error 20015.
+    # The LangChain chunk reducer may mis-merge it (string concat vs. dict
+    # merge semantics differ across versions), so we reconstruct it manually
+    # from all chunks that carry it.
+    _reasoning_parts: list[str] = []
+    for _c in chunks:
+        _rc = (getattr(_c, "additional_kwargs", None) or {}).get("reasoning_content")
+        if isinstance(_rc, str) and _rc:
+            _reasoning_parts.append(_rc)
+    if _reasoning_parts:
+        if not isinstance(getattr(merged, "additional_kwargs", None), dict):
+            merged.additional_kwargs = {}
+        merged.additional_kwargs["reasoning_content"] = "".join(_reasoning_parts)
+
     content_str = merged.content if isinstance(merged.content, str) else str(merged.content)
     _log_llm_call(run_folder, content_str, timed_out=False, elapsed=elapsed)
     return merged
@@ -150,9 +188,9 @@ REASONING_PROFILES = {
 @dataclass
 class BudgetConfig:
     """Runtime spending limits for a single campaign run."""
-    max_llm_calls: int = int(os.environ.get("FAULTLINE_MAX_LLM_CALLS", "20"))
-    max_tool_calls: int = int(os.environ.get("FAULTLINE_MAX_TOOL_CALLS", "60"))
-    max_input_tokens: int = int(os.environ.get("FAULTLINE_MAX_TOKENS", "200000"))
+    max_llm_calls: int = int(os.environ.get("FAULTLINE_MAX_LLM_CALLS", "40"))
+    max_tool_calls: int = int(os.environ.get("FAULTLINE_MAX_TOOL_CALLS", "120"))
+    max_input_tokens: int = int(os.environ.get("FAULTLINE_MAX_TOKENS", "500000"))
     max_output_tokens: int = int(os.environ.get("FAULTLINE_MAX_OUTPUT_TOKENS", "4096"))
     reasoning_level: str = os.environ.get("FAULTLINE_REASONING_LEVEL", "normal")
 
@@ -528,6 +566,15 @@ class AegisAgent:
                 run_folder=state.get("run_folder", ""),
                 max_tokens=budget.max_input_tokens,
             )
+
+            # Vision guardrail — re-anchor the LLM after turn 1 so the long
+            # tool-output history can't bury the original objective.
+            if self._llm_calls_used >= 2:
+                _coverage = _recent_step_coverage(state.get("run_folder", ""))
+                _reminder = VISION_REMINDER + (
+                    f"\nRecent step coverage: {_coverage}.\n"
+                )
+                tiered_msgs = [SystemMessage(content=_reminder), *tiered_msgs]
             if cm_stats["windowing_applied"]:
                 logger.info(
                     "content_manager: %d→%d est. tokens | cycles: %d total, "
@@ -721,6 +768,12 @@ class AegisAgent:
         iteration = 0
         findings_count = 0
         agent_start = time.monotonic()
+
+        # Checkpoint debouncing — write every N iterations or M seconds, not every event
+        _CHECKPOINT_INTERVAL_TURNS = int(os.environ.get("FAULTLINE_CHECKPOINT_INTERVAL", "5"))
+        _CHECKPOINT_INTERVAL_SECS = 30.0
+        _last_checkpoint_turn = 0
+        _last_checkpoint_time = agent_start
 
         # Progress tracker — keeps the agent aware of its plan, budget, and progress
         max_turns = int(os.environ.get("FAULTLINE_MAX_TURNS", "40"))
@@ -1025,18 +1078,24 @@ class AegisAgent:
                             initial_state["messages"].append(turn_msg)
                             f.write(f"\n=== TURN LIMIT REACHED: {tracker.max_turns} ===\n")
 
-                        # Auto-checkpoint after each event
-                        save_checkpoint(
-                            run_folder=run_folder,
-                            messages=initial_state.get("messages", []),
-                            turn=iteration,
-                            target_dir=target_dir,
-                            target_url=target_url,
-                            log_file=log_file,
-                            mode=mode,
-                            pipeline_completed=True,
-                            session_headers=session_headers,
-                        )
+                        # Debounced auto-checkpoint: save every N turns or M seconds
+                        _now = time.monotonic()
+                        _turns_since = iteration - _last_checkpoint_turn
+                        _secs_since = _now - _last_checkpoint_time
+                        if _turns_since >= _CHECKPOINT_INTERVAL_TURNS or _secs_since >= _CHECKPOINT_INTERVAL_SECS:
+                            save_checkpoint(
+                                run_folder=run_folder,
+                                messages=initial_state.get("messages", []),
+                                turn=iteration,
+                                target_dir=target_dir,
+                                target_url=target_url,
+                                log_file=log_file,
+                                mode=mode,
+                                pipeline_completed=True,
+                                session_headers=session_headers,
+                            )
+                            _last_checkpoint_turn = iteration
+                            _last_checkpoint_time = _now
 
                 except asyncio.CancelledError:
                     logger.info("Agent stream cancelled (Esc pressed)")

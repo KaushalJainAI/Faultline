@@ -6,11 +6,15 @@ AST project mapping, and production-ready scoring without an LLM.
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from core.tools import analyze_project_structure
 from skills.deterministic_checker import DeterministicChecker
 from skills.graph_3d import Graph3DGenerator
+
+
+class PipelineAborted(Exception):
+    """Raised when the operator presses Esc during the pipeline phase."""
 
 
 # Ordered categories for report grouping
@@ -56,12 +60,31 @@ class PipelineRunner:
             self.run_folder = Path(reports_dir)
         self.run_folder.mkdir(parents=True, exist_ok=True)
 
-    def run(self, include_semantic: bool = True, renderer=None) -> Dict:
+    def run(
+        self,
+        include_semantic: bool = True,
+        renderer=None,
+        pause_event: Optional[Any] = None,
+    ) -> Dict:
+        """
+        Run the pipeline. If `pause_event` is supplied, the runner checks
+        `pause_event.is_set()` between steps and raises `PipelineAborted` if set.
+        Any object exposing an `is_set()` method works (asyncio.Event,
+        threading.Event, or a custom flag).
+        """
+        def _check_abort(stage: str) -> None:
+            if pause_event is not None and pause_event.is_set():
+                raise PipelineAborted(
+                    f"Pipeline halted by operator (Esc) during '{stage}'."
+                )
+
         started_at = datetime.now()
 
+        _check_abort("startup")
         if renderer:
             renderer.show_pipeline_step("Deterministic Checks", "running")
         deterministic = DeterministicChecker(self.target_dir).run_all()
+        _check_abort("deterministic-checks")
         if renderer:
             count = deterministic.get("summary", {}).get("total_findings", 0)
             renderer.show_pipeline_step(
@@ -73,6 +96,7 @@ class PipelineRunner:
             structure = json.loads(analyze_project_structure.invoke(self.target_dir))
         except Exception:
             structure = {"files": {}, "dependencies": []}
+        _check_abort("ast-graph")
 
         graph_html_path = ""
         if renderer:
@@ -102,6 +126,7 @@ class PipelineRunner:
         except Exception as exc:
             if renderer:
                 renderer.show_pipeline_step("3D Graph", "error", detail=str(exc))
+        _check_abort("3d-graph")
 
         # Save serializer schemas for the Step-4 agent to use
         schemas = structure.get("serializer_schemas", [])
@@ -133,6 +158,7 @@ class PipelineRunner:
                 "Semantic Indexing", "skipped",
                 detail="no markdown docs found" if include_semantic else "disabled"
             )
+        _check_abort("semantic")
 
         elapsed = (datetime.now() - started_at).total_seconds()
 

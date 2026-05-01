@@ -18,6 +18,7 @@ dash
 networkx
 pandas
 rich>=13.0.0
+questionary>=2.0.0
 
 # ML/Semantic Indexing (Optional, ~2GB)
 # faiss-cpu

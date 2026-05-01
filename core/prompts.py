@@ -162,6 +162,31 @@ To keep your context window efficient, large tool outputs (>5,000 tokens) are au
 
 
 
+VISION_REMINDER = """[VISION GUARDRAIL — re-anchor before this turn]
+
+Your standing objective: systematically find vulnerabilities, crash points,
+logic flaws, and verify functional requirements in the target — using the
+seven-step workflow:
+
+  1. Baseline (deterministic checks)
+  2. Discover (structural + semantic mapping)
+  3. Verify (functional tests — edit boilerplates, run with run_functional_test;
+              EVERY endpoint needs at least one HAPPY case AND one SAD case;
+              pass case_kind="happy"/"sad" and run_folder=<your run folder>
+              so they are persisted to generated_tests.json + testcases/)
+  4. Mutate & Chaos (adversarial payloads via execute_chaos_campaign)
+  5. Heal & Patch (propose_code_patch for confirmed defects)
+  6. Report (record_finding for every issue, with vision_step)
+  7. Synthesize (save_vulnerability_report at the end)
+
+Rule: every action you take this turn MUST advance one of these steps.
+If you cannot map your next action to a step, STOP and call record_finding
+with what you've found so far, then declare the campaign complete.
+
+Operator messages prefixed with [OPERATOR] override defaults — obey them.
+"""
+
+
 ATTACK_GENERATION_PROMPT = """Based on the following endpoint details and its dependencies, generate a JSON array of at least 5 different adversarial payloads to test it using the async HTTP attack engine.
 Include 'method', 'endpoint', 'payload', and 'headers' for each attack. 
 

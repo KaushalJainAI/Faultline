@@ -1,11 +1,16 @@
 import asyncio
 import httpx
+import os
 import uuid
 import logging
 from typing import List, Dict
 from urllib.parse import urljoin
 
 logger = logging.getLogger("SiegeEngine")
+
+# Max concurrent HTTP requests to avoid exhausting connections / DoS-ing the target.
+_DEFAULT_CONCURRENCY = 20
+
 
 class SiegeEngine:
     """
@@ -18,50 +23,61 @@ class SiegeEngine:
         self.base_url = base_url.rstrip("/") + "/"
         self.results = []
         self.session_headers = session_headers or {}
+        self.max_concurrency = int(
+            os.environ.get("FAULTLINE_SIEGE_CONCURRENCY", str(_DEFAULT_CONCURRENCY))
+        )
 
-    async def _send_payload(self, client: httpx.AsyncClient, method: str, endpoint: str, payload: Dict, headers: Dict):
+    async def _send_payload(self, client: httpx.AsyncClient, semaphore: asyncio.Semaphore,
+                            method: str, endpoint: str, payload: Dict, headers: Dict):
         url = urljoin(self.base_url, endpoint.lstrip("/"))
 
         request_id = str(uuid.uuid4())
         chaos_headers = {**headers, **self.session_headers, "X-Aegis-Request-ID": request_id}
         
-        try:
-            if method.upper() == "POST":
-                response = await client.post(url, json=payload, headers=chaos_headers)
-            elif method.upper() == "GET":
-                response = await client.get(url, params=payload, headers=chaos_headers)
-            elif method.upper() == "PUT":
-                response = await client.put(url, json=payload, headers=chaos_headers)
-            elif method.upper() == "DELETE":
-                response = await client.delete(url, headers=chaos_headers)
-            else:
-                return None
+        async with semaphore:
+            try:
+                method_upper = method.upper()
+                if method_upper == "POST":
+                    response = await client.post(url, json=payload, headers=chaos_headers)
+                elif method_upper == "GET":
+                    response = await client.get(url, params=payload, headers=chaos_headers)
+                elif method_upper == "PUT":
+                    response = await client.put(url, json=payload, headers=chaos_headers)
+                elif method_upper == "PATCH":
+                    response = await client.patch(url, json=payload, headers=chaos_headers)
+                elif method_upper == "DELETE":
+                    response = await client.delete(url, headers=chaos_headers)
+                else:
+                    logger.warning("Unsupported HTTP method '%s' for %s — skipping.", method, endpoint)
+                    return None
 
-            result = {
-                "request_id": request_id,
-                "endpoint": endpoint,
-                "status_code": response.status_code,
-                "response_text": response.text[:500],  # truncate
-                "payload": payload,
-                "error": None
-            }
-            return result
-        except httpx.RequestError as e:
-            return {
-                "request_id": request_id,
-                "endpoint": endpoint,
-                "status_code": None,
-                "response_text": None,
-                "payload": payload,
-                "error": str(e)
-            }
+                result = {
+                    "request_id": request_id,
+                    "endpoint": endpoint,
+                    "status_code": response.status_code,
+                    "response_text": response.text[:500],  # truncate
+                    "payload": payload,
+                    "error": None
+                }
+                return result
+            except httpx.RequestError as e:
+                return {
+                    "request_id": request_id,
+                    "endpoint": endpoint,
+                    "status_code": None,
+                    "response_text": None,
+                    "payload": payload,
+                    "error": str(e)
+                }
 
     async def execute_assault(self, payloads: List[Dict]):
         """
         Executes an asynchronous assault based on a list of attack definitions.
-        Concurrent execution via asyncio.gather.
+        Concurrency is capped by a semaphore (default 20, configurable via
+        FAULTLINE_SIEGE_CONCURRENCY) to avoid exhausting connections.
         """
         self.results = []
+        semaphore = asyncio.Semaphore(self.max_concurrency)
         async with httpx.AsyncClient(timeout=10.0) as client:
             tasks = []
             for attack in payloads:
@@ -71,6 +87,7 @@ class SiegeEngine:
                 tasks.append(
                     self._send_payload(
                         client,
+                        semaphore,
                         attack.get("method", "GET"),
                         attack.get("endpoint", "/"),
                         attack.get("payload", {}),

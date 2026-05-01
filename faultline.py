@@ -23,6 +23,7 @@ Flags:
 
 import argparse
 import asyncio
+import json
 import logging
 import os
 import sys
@@ -90,12 +91,20 @@ def parse_args() -> argparse.Namespace:
                         help="Skip semantic indexing in the pipeline phase")
     parser.add_argument("--campaign-id", default="cli",
                         help="Campaign identifier used in the agent log filename")
+    parser.add_argument("--target-venv", default=None,
+                        help="Explicit path to the target project's virtualenv root. "
+                             "Use this when auto-detection cannot locate the target's venv "
+                             "(e.g. unusual layouts, conda envs).")
     parser.add_argument("--credentials", default=None,
                         help="Path to a credentials.toml file (overrides <target-dir>/.faultline/credentials.toml). "
                              "Use this to point at a file stored in Faultline/media/, e.g. "
                              "media/aiaas_credentials.toml")
     parser.add_argument("--resume", default=None,
                         help="Resume a previous run from its checkpoint file or run folder")
+    parser.add_argument("-q", "--quiet", action="store_true",
+                        help="Quiet mode: suppress agent reasoning, show only progress and findings")
+    parser.add_argument("--no-open", action="store_true",
+                        help="Don't auto-open the report when the campaign completes")
     # Budget / speed controls
     parser.add_argument("--reasoning-level", choices=["fast", "normal", "deep"], default=None,
                         help="Reasoning depth: fast (cheap), normal (default), deep (thorough)")
@@ -121,11 +130,23 @@ def parse_args() -> argparse.Namespace:
         )
 
     if not args.mode:
-        args.mode = Prompt.ask(
-            "[bold]Execution mode[/bold]",
-            choices=["pipeline", "agent", "hybrid"],
-            default="hybrid",
-        )
+        try:
+            import questionary
+            args.mode = questionary.select(
+                "Execution mode:",
+                choices=[
+                    questionary.Choice("hybrid   — pipeline + agent (recommended)", value="hybrid"),
+                    questionary.Choice("pipeline — deterministic checks only", value="pipeline"),
+                    questionary.Choice("agent    — skip pipeline, jump to AI", value="agent"),
+                ],
+                default="hybrid",
+            ).ask() or "hybrid"
+        except (ImportError, Exception):
+            args.mode = Prompt.ask(
+                "[bold]Execution mode[/bold]",
+                choices=["pipeline", "agent", "hybrid"],
+                default="hybrid",
+            )
 
     if args.mode in {"agent", "hybrid"} and not args.target_url:
         args.target_url = Prompt.ask(
@@ -160,7 +181,12 @@ def validate_provider(target_dir: str, renderer: CLIRenderer) -> bool:
 # Pipeline phase
 # ---------------------------------------------------------------------------
 
-def run_pipeline(args: argparse.Namespace, renderer: CLIRenderer, run_folder: Path) -> str:
+def run_pipeline(
+    args: argparse.Namespace,
+    renderer: CLIRenderer,
+    run_folder: Path,
+    pause_event=None,
+) -> str:
     from core.pipeline import PipelineRunner
     console.print("\n[bold cyan]Pipeline phase[/bold cyan]")
     renderer.start_phase()
@@ -168,6 +194,7 @@ def run_pipeline(args: argparse.Namespace, renderer: CLIRenderer, run_folder: Pa
     result = runner.run(
         include_semantic=not args.no_semantic,
         renderer=renderer,
+        pause_event=pause_event,
     )
     renderer.show_phase_timing("Pipeline phase")
     return result.get("report_path", "")
@@ -210,27 +237,36 @@ async def run_agent(
                 + "\n--- END PROJECT MEMORY ---"
             )
 
+    # Inject discovered API endpoints if available (from pre-flight discovery)
+    discovered_endpoints_path = run_folder / "discovered_endpoints.json"
+    if discovered_endpoints_path.exists():
+        try:
+            endpoints_data = json.loads(discovered_endpoints_path.read_text(encoding="utf-8"))
+            if endpoints_data:
+                # Compact summary — don't bloat the prompt with full schema
+                endpoint_lines = []
+                for ep in endpoints_data[:50]:  # cap at 50 endpoints
+                    auth_marker = " 🔒" if ep.get("auth_required") else ""
+                    endpoint_lines.append(
+                        f"  {ep['method']:6s} {ep['path']}{auth_marker}"
+                    )
+                initial_prompt += (
+                    f"\n\n--- DISCOVERED API ENDPOINTS ({len(endpoints_data)} total) ---\n"
+                    + "\n".join(endpoint_lines)
+                    + ("\n  ... and more (see discovered_endpoints.json in run folder)"
+                       if len(endpoints_data) > 50 else "")
+                    + "\n🔒 = requires authentication"
+                    + "\n--- END DISCOVERED ENDPOINTS ---"
+                    + "\n\nUse these endpoints to plan your testing. "
+                    + "Prioritize auth endpoints and endpoints handling sensitive data."
+                )
+        except Exception:
+            pass  # Non-critical — agent can still discover endpoints manually
+
     from core.agent import AegisAgent, BudgetConfig
 
-    # Apply budget flags → env vars so BudgetConfig picks them up automatically.
-    # We also set them explicitly in BudgetConfig so they always win over env defaults.
-    if args.reasoning_level:
-        os.environ["FAULTLINE_REASONING_LEVEL"] = args.reasoning_level
-    if args.max_llm_calls is not None:
-        os.environ["FAULTLINE_MAX_LLM_CALLS"] = str(args.max_llm_calls)
-    if args.max_tool_calls is not None:
-        os.environ["FAULTLINE_MAX_TOOL_CALLS"] = str(args.max_tool_calls)
-    if args.max_input_tokens is not None:
-        os.environ["FAULTLINE_MAX_TOKENS"] = str(args.max_input_tokens)
-    if args.max_output_tokens is not None:
-        os.environ["FAULTLINE_MAX_OUTPUT_TOKENS"] = str(args.max_output_tokens)
-
+    # BudgetConfig reads from env vars (already set in main_async dashboard setup)
     budget = BudgetConfig()
-    console.print(
-        f"[dim]Budget: reasoning={budget.reasoning_level}  "
-        f"llm≤{budget.max_llm_calls}  tool≤{budget.max_tool_calls}  "
-        f"in≤{budget.max_input_tokens:,}tok  out≤{budget.max_output_tokens}tok/call[/dim]"
-    )
 
     agent = AegisAgent(budget=budget)
     await agent.run_campaign(
@@ -259,7 +295,7 @@ async def main_async() -> int:
     if not args.no_hitl:
         enable_hitl()
 
-    renderer = CLIRenderer(console=console)
+    renderer = CLIRenderer(console=console, quiet=getattr(args, 'quiet', False))
 
     # ------------------------------------------------------------------
     # Resume flow — load checkpoint and skip straight to agent phase
@@ -370,46 +406,51 @@ async def main_async() -> int:
     # Normal flow
     # ------------------------------------------------------------------
 
-    # Load target credentials and run full resolution chain at startup.
-    # This pre-populates session_headers_var so the agent never needs to
-    # trigger HITL for the default role — get_credential() will see these
-    # headers and return immediately (source="session").
+    # Resolve authentication
+    auth_status = ""
     cred_store = init_store(args.target_dir, credentials_path=args.credentials)
     if cred_store.loaded:
-        console.print(f"[dim]{cred_store.summary()}[/dim]")
         from core.tools import resolve_credential_at_startup
         from core.context import session_headers_var
         auth_header = resolve_credential_at_startup(cred_store)
         if auth_header:
             session_headers_var.set(auth_header)
-            console.print("  [dim green]Auth resolved at startup — agent will use pre-populated headers.[/dim green]")
+            auth_status = "[green]\u2713 Bearer token resolved[/green]"
         else:
-            console.print(
-                "  [dim yellow]Warning: could not resolve auth at startup "
-                "(token/refresh/login all failed). "
-                "The agent will skip auth tests or call request_user_input.[/dim yellow]"
-            )
+            auth_status = "[yellow]\u26a0 Could not resolve (agent will prompt)[/yellow]"
         if not args.target_url and cred_store.target_url():
             args.target_url = cred_store.target_url()
-            console.print(f"[dim]  target url from credentials: {args.target_url}[/dim]")
-
-    renderer.show_banner(
-        target_dir=args.target_dir,
-        target_url=args.target_url,
-        mode=args.mode,
-    )
 
     run_folder = make_run_folder(args.target_dir)
-    renderer.show_run_folder(str(run_folder))
-    renderer.show_esc_hint()
 
+    # Validate provider before dashboard so we can include model info
     if args.mode in {"agent", "hybrid"}:
         if not validate_provider(args.target_dir, renderer):
             return 2
 
-    # Create input handler for Esc key detection
-    from core.input_handler import InputHandler
-    input_handler = InputHandler(console=console)
+    # Resolve model name for dashboard
+    model_display = os.environ.get("FAULTLINE_MODEL", "")
+    if not model_display:
+        model_display = os.environ.get("OPENROUTER_MODEL", "default")
+
+    # Create budget early so we can show it in dashboard
+    from core.agent import BudgetConfig
+    if args.reasoning_level:
+        os.environ["FAULTLINE_REASONING_LEVEL"] = args.reasoning_level
+    if args.max_llm_calls is not None:
+        os.environ["FAULTLINE_MAX_LLM_CALLS"] = str(args.max_llm_calls)
+    if args.max_tool_calls is not None:
+        os.environ["FAULTLINE_MAX_TOOL_CALLS"] = str(args.max_tool_calls)
+    if args.max_input_tokens is not None:
+        os.environ["FAULTLINE_MAX_TOKENS"] = str(args.max_input_tokens)
+    if args.max_output_tokens is not None:
+        os.environ["FAULTLINE_MAX_OUTPUT_TOKENS"] = str(args.max_output_tokens)
+    budget = BudgetConfig()
+    budget_str = (
+        f"{budget.max_llm_calls} turns \u00b7 "
+        f"{budget.max_input_tokens:,} tokens \u00b7 "
+        f"reasoning={budget.reasoning_level}"
+    )
 
     # Create session store for persistent logging
     session_store = SessionStore(target_dir=args.target_dir)
@@ -419,14 +460,107 @@ async def main_async() -> int:
         log_file=args.log_file,
         run_folder=str(run_folder),
     )
-    console.print(f"  [dim]Session:[/dim] {session_store.session_id}")
+
+    # ── Consolidated startup dashboard ─────────────────────────────────
+    renderer.show_startup_dashboard(
+        target_dir=args.target_dir,
+        target_url=args.target_url,
+        mode=args.mode,
+        run_folder=str(run_folder),
+        session_id=session_store.session_id,
+        model=model_display,
+        budget_str=budget_str,
+        auth_status=auth_status,
+    )
+
+    # Pin the target venv (used by DependencyChecker / QAEngineer) when given.
+    if args.target_venv:
+        os.environ["FAULTLINE_TARGET_VENV"] = args.target_venv
+
+    # Create input handler for Esc key detection
+    from core.input_handler import InputHandler
+    input_handler = InputHandler(console=console)
+
+    # Start ESC polling BEFORE the pipeline so the operator can halt at any point.
+    input_handler.start()
 
     report_path = ""
+    discovery = None  # Will be populated if agent/hybrid mode with target_url
     try:
         if args.mode in {"pipeline", "hybrid"}:
-            report_path = run_pipeline(args, renderer, run_folder)
+            # Pipeline runs synchronously; offload to a worker thread so the
+            # InputHandler poll loop keeps running on the main event loop.
+            report_path = await asyncio.to_thread(
+                run_pipeline, args, renderer, run_folder,
+                input_handler.pause_requested,
+            )
 
         if args.mode in {"agent", "hybrid"}:
+            # ── Pre-flight: health check + API schema discovery ────────────
+            if args.target_url:
+                from skills.target_discovery import run_discovery
+                from core.context import session_headers_var
+
+                renderer.show_pipeline_step("Target Discovery", "running")
+                discovery = run_discovery(
+                    target_url=args.target_url,
+                    run_folder=str(run_folder),
+                    headers=session_headers_var.get() or {},
+                )
+
+                if not discovery["healthy"]:
+                    renderer.show_pipeline_step(
+                        "Target Discovery", "error",
+                        detail=discovery["health_message"],
+                    )
+                    console.print(
+                        f"\n[bold red]Target server is not reachable.[/bold red]\n"
+                        f"  {discovery['health_message']}\n"
+                        f"  Start the server first, then re-run Faultline."
+                    )
+                    session_store.finalize_session(status="error", summary="Target unreachable")
+                    return 3
+
+                detail_parts = [discovery["health_message"]]
+                if discovery["schema_found"]:
+                    detail_parts.append(discovery["schema_summary"])
+                renderer.show_pipeline_step(
+                    "Target Discovery", "done",
+                    detail=" │ ".join(detail_parts),
+                )
+
+            # ── Campaign difficulty estimate ───────────────────────────────
+            endpoint_count = discovery.get("endpoint_count", 0) if discovery else 0
+            auth_count = 0
+            discovered_ep_path = run_folder / "discovered_endpoints.json"
+            if discovered_ep_path.exists():
+                try:
+                    ep_data = json.loads(discovered_ep_path.read_text(encoding="utf-8"))
+                    auth_count = sum(1 for e in ep_data if e.get("auth_required"))
+                except Exception:
+                    pass
+
+            # Count source files from pipeline report if available
+            file_count = 0
+            pipeline_report_path = run_folder / "pipeline_report.md"
+            if pipeline_report_path.exists():
+                try:
+                    import re as _re
+                    pr_text = pipeline_report_path.read_text(encoding="utf-8")
+                    m = _re.search(r'(\d+)\s+Python\s+files', pr_text)
+                    if m:
+                        file_count = int(m.group(1))
+                except Exception:
+                    pass
+
+            renderer.show_campaign_estimate(
+                endpoint_count=endpoint_count,
+                auth_endpoints=auth_count,
+                file_count=file_count,
+                max_turns=budget.max_llm_calls,
+                schema_found=discovery.get("schema_found", False) if discovery else False,
+            )
+
             await run_agent(
                 args, renderer, run_folder,
                 input_handler=input_handler,
@@ -452,13 +586,29 @@ async def main_async() -> int:
         )
         return 130
     except Exception as exc:
+        from core.pipeline import PipelineAborted
+        if isinstance(exc, PipelineAborted):
+            session_store.finalize_session(status="paused", summary=str(exc))
+            console.print(
+                f"\n[bold yellow]ESC pressed — pipeline halted, no agent run started.[/bold yellow]\n"
+                f"Re-invoke Faultline to begin fresh."
+            )
+            return 130
         session_store.finalize_session(status="error", summary=str(exc))
         console.print(f"\n[bold red]Campaign failed:[/bold red] {exc}")
         import traceback
         traceback.print_exc()
         return 1
+    finally:
+        try:
+            input_handler.stop()
+        except Exception:
+            pass
 
-    renderer.show_complete(report_path or str(run_folder))
+    renderer.show_complete(
+        report_path or str(run_folder),
+        auto_open=not getattr(args, 'no_open', False),
+    )
     return 0
 
 

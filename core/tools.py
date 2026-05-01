@@ -170,11 +170,21 @@ async def execute_chaos_campaign(payloads_json: str, target_url: str, log_file: 
         correlator.stop_watching()
         
         crashes = correlator.get_correlations()
-        
+
+        # Analyze responses for subtle vulnerabilities beyond HTTP 500
+        from skills.response_analyzer import analyze_assault_results
+        anomaly_report = analyze_assault_results(results)
+
         summary = {
             "total_executed": len(results),
             "total_crashes_found": len(crashes),
-            "crash_details": crashes
+            "crash_details": crashes,
+            "anomaly_analysis": {
+                "anomaly_count": anomaly_report["anomaly_count"],
+                "severity_distribution": anomaly_report["severity_distribution"],
+                "summary": anomaly_report["summary"],
+                "anomalies": anomaly_report["anomalies"][:20],  # cap for context window
+            },
         }
         return json.dumps(summary, indent=2)
     except json.JSONDecodeError:
@@ -183,23 +193,47 @@ async def execute_chaos_campaign(payloads_json: str, target_url: str, log_file: 
         return f"Execution error: {e}"
 
 @tool
-def run_functional_test(test_code: str, target_dir: str, test_type: str = "api") -> str:
+def run_functional_test(
+    test_code: str,
+    target_dir: str,
+    test_type: str = "api",
+    case_kind: str = "",
+    run_folder: str = "",
+) -> str:
     """
     Writes a Pytest script to the target directory and executes it.
     Validates that required dependencies are installed before running tests.
 
+    The generated test source AND the execution result are persisted to the run
+    folder (under testcases/ and generated_tests.json) so the suite survives the
+    run. Always provide BOTH a "happy" and a "sad" case for each endpoint or
+    behaviour you cover.
+
     Args:
         test_code: The test code to execute
         target_dir: Directory to run tests in
-        test_type: Type of test - 'api', 'auth', 'crud', 'validation', 'idor', 'django_model', 'load', 'e2e_journey', 'e2e_react'
+        test_type: Type of test - 'api', 'auth', 'crud', 'validation', 'idor',
+                   'django_model', 'load', 'e2e_journey', 'e2e_react'
+        case_kind: "happy" (positive path) or "sad" (negative/error path).
+                   Auto-inferred from the code if omitted.
+        run_folder: Per-run output directory. When set, the generated test is
+                    archived under <run_folder>/testcases/ and the execution
+                    result appended to <run_folder>/generated_tests.json.
 
     Returns:
         String with execution status and output
     """
-    logger.info("Tool Call: Executing Pytest functional test (type=%s)", test_type)
+    logger.info(
+        "Tool Call: Executing Pytest functional test (type=%s, kind=%s)",
+        test_type, case_kind or "auto",
+    )
     try:
-        qa = QAEngineer(target_dir=target_dir)
-        passed, output = qa.run_functional_test(test_code, test_type=test_type)
+        qa = QAEngineer(target_dir=target_dir, run_folder=run_folder or None)
+        passed, output = qa.run_functional_test(
+            test_code,
+            test_type=test_type,
+            case_kind=case_kind or None,
+        )
         status = "PASSED" if passed else "FAILED"
         return f"Status: {status}\nOutput:\n{output}"
     except Exception as e:
@@ -233,22 +267,14 @@ def save_vulnerability_report(report_markdown: str, filename: str = "agent_repor
         filepath = out_dir / filename
         filepath.write_text(report_markdown, encoding="utf-8")
 
-        # Also append synthesis to the live report
+        # Also append synthesis to the live report (sync — see record_finding rationale)
         try:
-            import asyncio as _asyncio
             from core.context import live_report_var
             _lr = live_report_var.get(None)
             if _lr is not None:
-                try:
-                    loop = _asyncio.get_event_loop()
-                    if loop.is_running():
-                        loop.create_task(_lr.append_section("Agent Synthesis", report_markdown))
-                    else:
-                        loop.run_until_complete(_lr.append_section("Agent Synthesis", report_markdown))
-                except RuntimeError:
-                    pass
-        except Exception:
-            pass
+                _lr.append_section_sync("Agent Synthesis", report_markdown)
+        except Exception as _e:
+            logger.warning("live_report synthesis append failed: %s", _e)
 
         return f"Successfully saved report to {filepath}"
     except Exception as e:
@@ -443,9 +469,11 @@ def record_finding(
             vision_step=vision_step,
         )
 
-        # Append to the live report immediately so progress survives a crash
+        # Append to the live report immediately so progress survives a crash.
+        # Use the synchronous path because @tool wrappers run on a worker thread
+        # that does not own the asyncio event loop — scheduling a task there
+        # silently drops the write.
         try:
-            import asyncio as _asyncio
             from core.context import live_report_var
             _lr = live_report_var.get(None)
             if _lr is not None:
@@ -455,17 +483,11 @@ def record_finding(
                     "reproduction_steps": reproduction_steps,
                     "suggested_fix": suggested_fix,
                     "file_path": file_path, "line_number": line_number,
+                    "vision_step": vision_step,
                 }
-                try:
-                    loop = _asyncio.get_event_loop()
-                    if loop.is_running():
-                        loop.create_task(_lr.append_finding(_finding_data))
-                    else:
-                        loop.run_until_complete(_lr.append_finding(_finding_data))
-                except RuntimeError:
-                    pass
-        except Exception:
-            pass
+                _lr.append_finding_sync(_finding_data)
+        except Exception as _e:
+            logger.warning("live_report append failed: %s", _e)
 
         return f"Successfully recorded finding '{title}' for vision step {vision_step}."
     except Exception as e:
