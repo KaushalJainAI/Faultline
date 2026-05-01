@@ -1,9 +1,14 @@
+"""
+Faultline Deterministic Pipeline Runner.
+This module orchestrates Step 1-3 of the vision: syntax checks, static analysis,
+AST project mapping, and production-ready scoring without an LLM.
+"""
 import json
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from core.tools import analyze_project_structure, index_project_documentation
+from core.tools import analyze_project_structure
 from skills.deterministic_checker import DeterministicChecker
 from skills.graph_3d import Graph3DGenerator
 
@@ -113,14 +118,16 @@ class PipelineRunner:
 
         semantic = {"status": "skipped"}
         if include_semantic and any(Path(self.target_dir).rglob("*.md")):
+            from skills.semantic_indexer import project_db_path
+            from core import index_state
+            db_path = str(project_db_path("./db/faiss_store", self.target_dir))
+            index_state.start_background_index(self.target_dir, db_path)
+            semantic = {"status": "indexing_in_background", "db_path": db_path}
             if renderer:
-                renderer.show_pipeline_step("Semantic Indexing", "running")
-            semantic = {
-                "status": "completed",
-                "result": index_project_documentation.invoke({"target_dir": self.target_dir}),
-            }
-            if renderer:
-                renderer.show_pipeline_step("Semantic Indexing", "done")
+                renderer.show_pipeline_step(
+                    "Semantic Indexing", "running",
+                    detail="started in background — pipeline continues",
+                )
         elif renderer:
             renderer.show_pipeline_step(
                 "Semantic Indexing", "skipped",

@@ -1,5 +1,8 @@
 # Aegis-Breaker Agent
 
+**Date**: 2026-05-01
+**Description**: Detailed explanation of the Aegis-Breaker agent architecture, runtime flow, and tool orchestration using LangGraph.
+
 Aegis-Breaker is the LangGraph orchestration layer for Faultline. Its job is to combine normal QA verification with adversarial chaos testing.
 
 ## Runtime Flow
@@ -35,7 +38,7 @@ The model receives:
 - `execute_claude_code_task`: Delegates complex refactoring or multi-file architectural changes to Claude Code.
 - `execute_gemini_cli_task`: Delegates deep reasoning and exploration to the Gemini CLI.
 - `execute_codex_cli_task`: Delegates restricted or coding-focused sandbox tasks to the Codex CLI.
-- `generate_dependency_graph`: Uses the Visualizer to render Mermaid.js structural graphs.
+- `generate_dependency_graph`: Generates an interactive 3D dependency visualization (Dash app) showing imports, calls, and inheritance.
 - `calculate_project_quality`: Uses the Visualizer to calculate endpoint risk and global quality scores.
 - `generate_campaign_visuals`: Uses the Visualizer to create Plotly failure-rate and vulnerability maps.
 
@@ -77,12 +80,21 @@ A complete campaign should:
 
 1. Authenticate using the Vault (if configured).
 2. Discover structure and documentation intent.
-3. Verify expected behavior with generated functional tests.
+3. Automatically deploy and verify boilerplates using the "Edit-Run" methodology.
 4. Delegate deep analysis to CLI providers if needed.
 5. Generate adversarial payloads from discovered endpoint context.
 6. Execute attacks against the target URL.
 7. Correlate crashes from logs using `X-Aegis-Request-ID`.
-8. Calculate quality scores and generate visual charts.
+8. Calculate quality scores and generate 3D/2D visual reports.
 9. Save a report and propose patches when useful.
 
 Campaigns now persist status, tool runs, findings, and Markdown report paths in the Django database. Richer endpoint schema extraction remains a planned next step.
+
+## 💾 Context Window Management
+
+To maintain efficiency during long-running campaigns with large codebases, Faultline implements a **Queryable Reference** system:
+- **Automatic Summarization**: Tool outputs exceeding 5,000 tokens are automatically summarized inline in the agent's context.
+- **Persistent Storage**: The full, original outputs are saved to disk in the run-specific folder with a `[REF:<id>]` marker.
+- **On-Demand Retrieval**: The agent can use the `retrieve_stored_content` tool to fetch the original, unsummarized data using the reference ID at any time.
+
+This hybrid approach ensures the agent remains responsive and cost-effective without losing access to granular technical data when it's needed for final reporting or patch generation.

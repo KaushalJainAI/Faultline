@@ -1,5 +1,8 @@
 # Faultline Pipeline Vision
 
+**Date**: 2026-05-01
+**Description**: The architectural roadmap and 7-step vision for the Faultline platform, from static analysis to cyber security chaos engineering.
+
 The ultimate goal of the Faultline project is to provide a comprehensive, 7-step pipeline that progresses from basic static analysis to deep semantic understanding, production readiness profiling, and finally, cyber security chaos testing — delivered through an **interactive CLI agent** that operates like Claude Code or OpenCode.
 
 The user experience is a single command (`python faultline.py`) that drops the operator into a live session with the Faultline agent. The terminal shows the agent's reasoning as it works, every tool call and result, every file generated, and pauses to ask the operator for credentials or destructive-action permission whenever the agent needs them. This is the primary surface; the Django REST control plane remains available for headless / CI use.
@@ -119,11 +122,12 @@ Every `python faultline.py` invocation creates a unique, isolated output folder:
 reports/
   <project_name>_<YYYYMMDD>_<HHMMSS>/
     pipeline_report.md      ← deterministic findings: syntax, imports, deps, AST roots
+    dependency_graph.py     ← interactive 3D dependency visualization (Dash app)
     campaign_agent.log      ← full step-by-step agent reasoning (debug trail)
     agent_report.md         ← AI-authored vulnerability report (written by the agent)
     testcases/
-      api_test_<HHMMSS>.py  ← boilerplate copy, edited by the agent for this project
-      model_test_<HHMMSS>.py
+      api_test_boilerplate.py   ← automatically deployed at startup
+      model_test_boilerplate.py  ← edited in-place by the agent
 ```
 
 ### Production-Readiness Score
@@ -151,7 +155,7 @@ The `reports/` directory becomes a time-series log of the project's health, maki
 
 ### Boilerplate-Driven Test Generation
 
-Rather than having the agent write test files from scratch (expensive on output tokens, hard to validate), the agent calls `copy_test_boilerplate` to get a working, structurally-correct starting file, then edits only the parts specific to this project's endpoints or models. This keeps generated files readable, keeps costs low, and keeps human reviewers in control of the test structure.
+Rather than having the agent write test files from scratch or manually copy them, Faultline automatically deploys all boilerplate scripts from `agent_assets/test_boilerplates/` into the `testcases/` directory at the start of every campaign. The agent then directly edits these pre-existing templates. This "Edit-Run" workflow keeps generated files readable, minimizes token usage, and prevents structural hallucinations.
 
 ---
 

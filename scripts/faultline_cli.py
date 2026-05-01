@@ -14,7 +14,7 @@ from core.pipeline import PipelineRunner
 
 
 async def main():
-    load_dotenv()
+    load_dotenv(override=True)
     parser = argparse.ArgumentParser(description="Faultline CLI debugging tool")
     parser.add_argument("--target-dir", required=True, help="Target project directory")
     parser.add_argument("--mode", choices=["pipeline", "agent", "hybrid"], default="hybrid")

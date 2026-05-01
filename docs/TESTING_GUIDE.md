@@ -1,5 +1,8 @@
 # Faultline Testing Guide
 
+**Date**: 2026-05-01
+**Description**: Protocol for writing and executing functional tests using the cost-optimized "Copy and Edit" boilerplate methodology.
+
 This guide outlines the protocol for AI agents and human contributors to write tests efficiently and consistently for targets in the Faultline platform.
 
 ## The Cost-Optimized Boilerplate Methodology

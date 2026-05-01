@@ -1,5 +1,8 @@
 # LLM Providers Guide
 
+**Date**: 2026-05-01
+**Description**: Configuration reference for supported LLM providers, including direct API keys and local CLI adapters (Claude, Gemini, Codex).
+
 Faultline supports multiple LLM providers for its agentic workflows. You can choose between direct API integration (high latency, API costs) or local CLI adapters (lower latency, utilizes existing subscriptions).
 
 ## Direct API Providers

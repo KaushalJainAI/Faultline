@@ -1,5 +1,8 @@
 # Contributing to Faultline
 
+**Date**: 2026-05-01
+**Description**: Guidelines for contributors on how to extend Faultline with new skills, modify agent workflows, and adhere to coding standards.
+
 We welcome contributions to Faultline! This guide covers how to extend the system by adding new skills or modifying the agent workflow.
 
 ## Project Structure Recap

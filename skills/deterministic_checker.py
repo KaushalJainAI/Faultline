@@ -29,6 +29,8 @@ class DeterministicChecker:
     def __init__(self, target_dir: str, timeout: int = 60):
         self.target_dir = Path(target_dir).expanduser().resolve()
         self.timeout = timeout
+        self.target_python = self._target_python() or sys.executable
+        self.target_modules, self.target_builtins = self._get_target_env_info()
 
     def run_all(self) -> Dict:
         findings: List[CheckFinding] = []
@@ -103,13 +105,36 @@ class DeterministicChecker:
                     self._append_missing_import(findings, module_name, local_modules, path, node.lineno)
         return findings
 
+    def _get_target_env_info(self) -> (set, set):
+        """Discovers available modules and builtins in the target project's environment."""
+        script = (
+            "import pkgutil, sys, json; "
+            "print(json.dumps({"
+            "\"modules\": [m.name for m in pkgutil.iter_modules()],"
+            "\"builtins\": list(sys.builtin_module_names)"
+            "}))"
+        )
+        result = self._run([self.target_python, "-c", script])
+        if result.returncode == 0:
+            try:
+                data = json.loads(result.stdout)
+                return set(data.get("modules", [])), set(data.get("builtins", []))
+            except:
+                pass
+        return set(), set(sys.builtin_module_names)
+
     def _append_missing_import(self, findings, module_name, local_modules, path, lineno):
-        if module_name in local_modules or module_name in sys.builtin_module_names:
+        if (module_name in local_modules or 
+            module_name in self.target_builtins or 
+            module_name in self.target_modules):
             return
+        
+        # Final fallback: check if it's importable in the current process (unlikely if not in target)
         try:
             exists = importlib.util.find_spec(module_name) is not None
         except Exception:
             exists = False
+        
         if not exists:
             findings.append(CheckFinding(
                 title=f"Missing import: {module_name}",
@@ -187,8 +212,7 @@ class DeterministicChecker:
         manifests = ("requirements.txt", "pyproject.toml", "Pipfile", "setup.py", "setup.cfg")
         if not any((self.target_dir / m).exists() for m in manifests):
             return []
-        python = self._target_python() or sys.executable
-        result = self._run([python, "-m", "pip", "check"])
+        result = self._run([self.target_python, "-m", "pip", "check"])
         if result.returncode == 0:
             return []
         return [CheckFinding(
@@ -203,7 +227,7 @@ class DeterministicChecker:
     def run_pytest_collect(self) -> List[CheckFinding]:
         if not (self.target_dir / "pytest.ini").exists() and not any(self.target_dir.rglob("test*.py")):
             return []
-        result = self._run([sys.executable, "-m", "pytest", "--collect-only", "-q"])
+        result = self._run([self.target_python, "-m", "pytest", "--collect-only", "-q"])
         if result.returncode == 0:
             return []
         return [CheckFinding(

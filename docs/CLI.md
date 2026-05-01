@@ -1,5 +1,8 @@
 # Faultline Interactive CLI
 
+**Date**: 2026-05-01
+**Description**: Comprehensive guide to the `faultline.py` interactive terminal agent, covering modes, live feedback, HITL prompts, and run isolation.
+
 Faultline ships with an interactive command-line agent — `faultline.py` — that runs the full testing pipeline directly in your terminal with live agent reasoning, real-time tool call visibility, and human-in-the-loop (HITL) prompts when the agent needs credentials or permission.
 
 It is the recommended way to use Faultline locally. The Django REST control plane remains available for headless / CI use.
@@ -94,11 +97,12 @@ The renderer surfaces:
 
 - **Banner** — target dir, URL, mode, and the run folder path
 - **Pipeline steps** — `o` running, `+` done, `x` error, `-` skipped
-- **Agent turns** — `[ Agent turn N ]` counter in dim cyan at the start of each LLM iteration
-- **Agent thinking** — dim italic text (truncated at 600 chars with line count)
-- **Tool calls** — `-> tool_name(args summary)` in cyan
-- **Tool results** — `<- result` in green (truncated at 400 chars)
-- **Phase timing** — elapsed seconds after each phase completes
+- **Agent turn counter** — `[ Agent turn N ]` counter in dim cyan at the start of each LLM iteration.
+- **Live Status & ETA** — real-time spinners (e.g., `o Agent is thinking... (ETA: 42s)`) that update while waiting for LLM or tool responses.
+- **Agent thinking** — dim italic text (truncated at 600 chars with line count).
+- **Tool calls** — `-> tool_name(args summary)` in cyan.
+- **Tool results** — `<- result` in green (truncated at 400 chars).
+- **Phase timing** — elapsed seconds after each phase completes.
 - **Findings** — color-coded panels by severity (CRITICAL red, HIGH orange, MEDIUM yellow, LOW blue)
 - **File generation** — `[+] path/to/file` when reports / patches / tests are written
 - **HITL pauses** — yellow panels announcing the prompt before it blocks
@@ -174,8 +178,9 @@ reports/
     campaign_agent.log               ← full agent reasoning (debug trail)
     agent_report.md                  ← AI-authored vulnerability findings
     testcases/
-      api_test_<HHMMSS>.py           ← boilerplate copied + edited by the agent
-      model_test_<HHMMSS>.py
+    testcases/
+      api_test_boilerplate.py        ← automatically deployed at startup
+      model_test_boilerplate.py       ← edited in-place by the agent
 ```
 
 | File                              | Contents                                                    |

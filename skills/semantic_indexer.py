@@ -3,22 +3,62 @@ try:
 except ImportError:
     faiss = None
 
-import numpy as np
+import hashlib
+import json
 import logging
 import pickle
+import re
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("SemanticIndexer")
 
 EMBEDDING_DIM = 1024
 EMBEDDING_MODEL = 'Qwen/Qwen3-Embedding-0.6B'
 LOCAL_MODEL_DIR = Path("./models/qwen_embedding")
+BASE_DB_DIR = "./db/faiss_store"
+
+
+# ── Per-project path helpers ────────────────────────────────────────────────
+
+def project_db_path(base_dir: str, target_dir: str) -> Path:
+    """
+    Return the per-project FAISS store path under base_dir.
+
+    Format: <base_dir>/<sanitized_name>_<8-char-md5>/
+    Example: ./db/faiss_store/Backend_3f2a1b9c/
+    """
+    abs_target = str(Path(target_dir).resolve())
+    slug = re.sub(r'[^a-zA-Z0-9_-]', '_', Path(abs_target).name)[:24]
+    h = hashlib.md5(abs_target.encode()).hexdigest()[:8]
+    return Path(base_dir) / f"{slug}_{h}"
+
+
+def compute_fingerprint(root_dir: str) -> str:
+    """
+    Fast stat-based fingerprint of all *.md files in root_dir.
+    Uses file size + mtime_ns — no content reads required.
+    Catches adds, deletes, renames, and content edits.
+    """
+    root = Path(root_dir)
+    entries = []
+    for path in sorted(root.rglob("*.md")):
+        if "venv" in path.parts:
+            continue
+        s = path.stat()
+        entries.append(f"{path.relative_to(root)}:{s.st_size}:{s.st_mtime_ns}")
+    return hashlib.md5("\n".join(entries).encode()).hexdigest()
+
+
+# ── Embedder ────────────────────────────────────────────────────────────────
+
+import numpy as np
+
 
 class QwenEmbedder:
-    """
-    Wraps Qwen3-Embedding-0.6B with local caching support.
-    """
+    """Wraps Qwen3-Embedding-0.6B with local caching support."""
+
     def __init__(self):
         self._model = None
         self._tokenizer = None
@@ -30,19 +70,16 @@ class QwenEmbedder:
         try:
             import torch
             from transformers import AutoTokenizer, AutoModel
-            
-            # Check if we have a local cache
+
             if LOCAL_MODEL_DIR.exists():
-                logger.info(f"[Embedder] Loading {EMBEDDING_MODEL} from local cache: {LOCAL_MODEL_DIR}")
+                logger.info("[Embedder] Loading %s from local cache: %s", EMBEDDING_MODEL, LOCAL_MODEL_DIR)
                 self._tokenizer = AutoTokenizer.from_pretrained(str(LOCAL_MODEL_DIR), trust_remote_code=True)
                 self._model = AutoModel.from_pretrained(str(LOCAL_MODEL_DIR), trust_remote_code=True)
             else:
-                logger.info(f"[Embedder] Downloading {EMBEDDING_MODEL} from HuggingFace...")
+                logger.info("[Embedder] Downloading %s from HuggingFace...", EMBEDDING_MODEL)
                 self._tokenizer = AutoTokenizer.from_pretrained(EMBEDDING_MODEL, trust_remote_code=True)
                 self._model = AutoModel.from_pretrained(EMBEDDING_MODEL, trust_remote_code=True)
-                
-                # Save locally for next time
-                logger.info(f"[Embedder] Saving model to local cache: {LOCAL_MODEL_DIR}")
+                logger.info("[Embedder] Saving model to local cache: %s", LOCAL_MODEL_DIR)
                 LOCAL_MODEL_DIR.mkdir(parents=True, exist_ok=True)
                 self._tokenizer.save_pretrained(str(LOCAL_MODEL_DIR))
                 self._model.save_pretrained(str(LOCAL_MODEL_DIR))
@@ -78,10 +115,14 @@ class QwenEmbedder:
             all_vecs.extend(self._normalise(row) for row in arr)
         return all_vecs
 
+
+# ── Indexer ─────────────────────────────────────────────────────────────────
+
 class SemanticIndexer:
     def __init__(self, db_path: str, hsnw_m: int = 48):
         """
         Standardized Semantic Indexer using FAISS HNSW.
+        Each target project gets its own db_path (use project_db_path() to derive it).
         """
         if faiss is None:
             logger.error("faiss-cpu not installed. SemanticIndexer disabled.")
@@ -90,22 +131,44 @@ class SemanticIndexer:
 
         self.db_path = Path(db_path)
         self.db_path.mkdir(parents=True, exist_ok=True)
-        
+
         self.index_file = self.db_path / "faiss.index"
         self.metadata_file = self.db_path / "metadata.pkl"
-        
+        self.cache_meta_file = self.db_path / "cache_meta.json"
+
         self.embedder = QwenEmbedder()
         self.dim = EMBEDDING_DIM
-        
+        self._hnsw_m = hsnw_m
+
         if self.index_file.exists():
             self.index = faiss.read_index(str(self.index_file))
             with open(self.metadata_file, "rb") as f:
                 self.metadata = pickle.load(f)
         else:
-            self.index = faiss.IndexHNSWFlat(self.dim, hsnw_m)
-            self.index.hnsw.efConstruction = 128 
-            self.index.hnsw.efSearch = 64
+            self.index = self._fresh_index()
             self.metadata = []
+
+    def _fresh_index(self):
+        idx = faiss.IndexHNSWFlat(self.dim, self._hnsw_m)
+        idx.hnsw.efConstruction = 128
+        idx.hnsw.efSearch = 64
+        return idx
+
+    def is_cache_valid(self, root_dir: str) -> bool:
+        """
+        Return True if the stored fingerprint matches the current state of
+        *.md files in root_dir — meaning a re-index is unnecessary.
+        """
+        if not self.cache_meta_file.exists() or not self.index_file.exists():
+            return False
+        try:
+            meta = json.loads(self.cache_meta_file.read_text(encoding="utf-8"))
+            stored_fp = meta.get("content_fingerprint", "")
+            current_fp = compute_fingerprint(root_dir)
+            return stored_fp == current_fp
+        except Exception as exc:
+            logger.warning("SemanticIndexer: could not read cache_meta.json: %s", exc)
+            return False
 
     def index_text(self, text: str, meta: Dict[str, Any]):
         if not self.index:
@@ -118,21 +181,54 @@ class SemanticIndexer:
     def index_project_docs(self, root_dir: str):
         if not self.index:
             return
+
+        if self.is_cache_valid(root_dir):
+            logger.info(
+                "SemanticIndexer: cache valid for %s — skipping re-index", root_dir
+            )
+            return
+
+        logger.info("SemanticIndexer: fingerprint changed (or first run) — re-indexing %s", root_dir)
+
+        # Reset to avoid accumulating duplicate vectors
+        self.index = self._fresh_index()
+        self.metadata = []
+
         root = Path(root_dir)
         texts, metas = [], []
         for path in root.rglob("*.md"):
-            if "venv" in str(path):
+            if "venv" in path.parts:
                 continue
-            with open(path, "r", encoding="utf-8") as f:
-                content = f.read()
+            try:
+                content = path.read_text(encoding="utf-8", errors="ignore")
                 texts.append(content)
                 metas.append({"path": str(path.relative_to(root)), "type": "documentation"})
-        if texts:
-            vecs = self.embedder.encode(texts)
-            self.index.add(np.array(vecs).astype('float32'))
-            for text, meta in zip(texts, metas):
-                self.metadata.append({"content": text, "meta": meta})
-            self._save()
+            except Exception as exc:
+                logger.warning("SemanticIndexer: skipping %s: %s", path, exc)
+
+        if not texts:
+            logger.info("SemanticIndexer: no *.md files found in %s", root_dir)
+            return
+
+        vecs = self.embedder.encode(texts)
+        self.index.add(np.array(vecs).astype('float32'))
+        for text, meta in zip(texts, metas):
+            self.metadata.append({"content": text, "meta": meta})
+        self._save()
+
+        # Write cache metadata so next run can skip this work
+        try:
+            self.cache_meta_file.write_text(json.dumps({
+                "target_dir": str(Path(root_dir).resolve()),
+                "content_fingerprint": compute_fingerprint(root_dir),
+                "indexed_at": datetime.now().isoformat(timespec="seconds"),
+                "doc_count": len(texts),
+            }), encoding="utf-8")
+            logger.info(
+                "SemanticIndexer: indexed %d doc(s) → %s", len(texts), self.db_path
+            )
+        except Exception as exc:
+            logger.warning("SemanticIndexer: could not write cache_meta.json: %s", exc)
 
     def query(self, query_text: str, n_results: int = 3) -> List[Dict]:
         if not self.index:

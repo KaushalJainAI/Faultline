@@ -98,7 +98,7 @@ class ClaudeAdapter(CLIAdapter):
 
     def run_task(self, prompt: str, options: Optional[Dict] = None) -> str:
         cmd = [self.resolved_binary(), "-p", prompt, "--dangerously-skip-permissions", *self.extra_args("FAULTLINE_CLAUDE_CLI_ARGS")]
-        return self.run_command(cmd, self.timeout(options, 600))
+        return self.run_command(cmd, self.timeout(options, 290))
 
 class GeminiAdapter(CLIAdapter):
     name = "gemini"
@@ -112,7 +112,7 @@ class GeminiAdapter(CLIAdapter):
 
     def run_task(self, prompt: str, options: Optional[Dict] = None) -> str:
         cmd = [self.resolved_binary(), "-p", prompt, "--dangerously-skip-permissions", "--skip-trust", *self.extra_args("FAULTLINE_GEMINI_CLI_ARGS")]
-        return self.run_command(cmd, self.timeout(options, 600))
+        return self.run_command(cmd, self.timeout(options, 290))
 
 class CodexAdapter(CLIAdapter):
     name = "codex"
@@ -142,7 +142,7 @@ class CodexAdapter(CLIAdapter):
             os.environ.get("FAULTLINE_CODEX_SANDBOX", "read-only"),
             *self.extra_args("FAULTLINE_CODEX_CLI_ARGS"),
         ]
-        return self.run_command(cmd, self.timeout(options, 600))
+        return self.run_command(cmd, self.timeout(options, 290))
 
 class ProviderManager:
     def __init__(self, target_dir: str):

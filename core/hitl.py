@@ -1,21 +1,23 @@
 """
 Human-in-the-Loop (HITL) manager for Faultline.
 
-Used by the interactive CLI (faultline.py) to pause the agent and ask the
-operator for permission before destructive actions or for credentials when
-the agent encounters an authentication challenge.
+Permission prompts are printed inline to stdout (like Claude Code) — no Rich
+modals. The operator sees the tool name and description, then types y or N.
+A 30-second timeout defaults to deny so a missed prompt never stalls the run.
 
-When HITL is disabled (REST API path, scripts, headless mode) all methods
-return safe defaults and never block.
+When HITL is disabled (headless, REST API) all methods return safe defaults.
 """
 
 import asyncio
 import logging
+import sys
+import threading
 from typing import Optional
 
 logger = logging.getLogger("FaultlineHITL")
 
 _HITL_ENABLED: bool = False
+HITL_PROMPT_TIMEOUT: int = 30   # seconds before defaulting to deny
 
 
 def enable_hitl() -> None:
@@ -33,12 +35,46 @@ def is_enabled() -> bool:
     return _HITL_ENABLED
 
 
+# ---------------------------------------------------------------------------
+# Cross-platform stdin readline with timeout
+# ---------------------------------------------------------------------------
+
+def _read_line_with_timeout(seconds: int) -> Optional[str]:
+    """
+    Read one line from stdin, returning None if the user doesn't respond
+    within `seconds`. Works on both POSIX and Windows.
+    """
+    result: list[Optional[str]] = [None]
+    done = threading.Event()
+
+    def _reader():
+        try:
+            result[0] = sys.stdin.readline()
+        except Exception:
+            result[0] = None
+        finally:
+            done.set()
+
+    t = threading.Thread(target=_reader, daemon=True)
+    t.start()
+    if done.wait(timeout=seconds):
+        return result[0]
+    # Timeout — print a newline so the terminal isn't left mid-line
+    sys.stdout.write("\n")
+    sys.stdout.flush()
+    return None
+
+
+# ---------------------------------------------------------------------------
+# HITLManager
+# ---------------------------------------------------------------------------
+
 class HITLManager:
     """
-    Synchronous human-in-the-loop prompts.
+    Inline human-in-the-loop prompts — no modal dialogs.
 
     Call directly from sync code, or from async code via the
-    `async_request_*` helpers below which off-load the blocking prompt
+    `async_request_*` helpers below which off-load the blocking read
     to a thread so the event loop is not frozen.
     """
 
@@ -46,17 +82,21 @@ class HITLManager:
         if not _HITL_ENABLED:
             return True
         try:
-            from rich.prompt import Confirm
-            from rich.console import Console
-            from rich.panel import Panel
-            console = Console()
-            panel = Panel(
-                f"[bold]Action:[/bold] {action_name}\n[dim]{description}[/dim]",
-                title="[yellow]HITL Permission Request[/yellow]",
-                border_style="yellow",
+            sys.stdout.write(
+                f"\n[faultline] Tool: {action_name}\n"
+                f"  {description}\n"
+                f"  Allow? [y/N] "
             )
-            console.print(panel)
-            return Confirm.ask("  Approve this action?", default=False)
+            sys.stdout.flush()
+            line = _read_line_with_timeout(HITL_PROMPT_TIMEOUT)
+            if line is None:
+                sys.stdout.write(f"  (no response in {HITL_PROMPT_TIMEOUT}s — denied)\n")
+                sys.stdout.flush()
+                logger.warning("HITL: %s — timed out, denied.", action_name)
+                return False
+            approved = (line or "").strip().lower() == "y"
+            logger.info("HITL: %s — %s.", action_name, "approved" if approved else "denied")
+            return approved
         except Exception as exc:
             logger.warning("HITL permission prompt failed: %s. Defaulting to deny.", exc)
             return False
@@ -65,20 +105,16 @@ class HITLManager:
         if not _HITL_ENABLED:
             return ""
         try:
-            from rich.prompt import Prompt
-            from rich.console import Console
-            from rich.panel import Panel
-            console = Console()
-            body = f"[bold]Needed:[/bold] {name}"
+            msg = f"\n[faultline] Credential needed: {name}"
             if hint:
-                body += f"\n[dim]{hint}[/dim]"
-            panel = Panel(
-                body,
-                title="[cyan]Credential Request[/cyan]",
-                border_style="cyan",
-            )
-            console.print(panel)
-            return Prompt.ask(f"  Enter {name}", password=sensitive, default="")
+                msg += f" ({hint})"
+            sys.stdout.write(msg + "\n  Value: ")
+            sys.stdout.flush()
+            if sensitive:
+                import getpass
+                return getpass.getpass("") or ""
+            value = (_read_line_with_timeout(60) or "").strip()
+            return value
         except Exception as exc:
             logger.warning("HITL credential prompt failed: %s. Returning empty.", exc)
             return ""
@@ -93,14 +129,14 @@ hitl = HITLManager()
 # ---------------------------------------------------------------------------
 
 async def async_request_permission(action_name: str, description: str) -> bool:
-    """Async-safe wrapper. Off-loads the blocking Rich prompt to a thread."""
+    """Async-safe wrapper. Off-loads the blocking stdin read to a thread."""
     if not _HITL_ENABLED:
         return True
     return await asyncio.to_thread(hitl.request_permission, action_name, description)
 
 
 async def async_request_credential(name: str, hint: str = "", sensitive: bool = True) -> str:
-    """Async-safe wrapper. Off-loads the blocking Rich prompt to a thread."""
+    """Async-safe wrapper. Off-loads the blocking stdin read to a thread."""
     if not _HITL_ENABLED:
         return ""
     return await asyncio.to_thread(hitl.request_credential, name, hint, sensitive)

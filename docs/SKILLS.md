@@ -1,5 +1,8 @@
 # Faultline Skills Library
 
+**Date**: 2026-05-01
+**Description**: Catalog of modular capabilities available to the agent, including mapping, attacking, correlating, and visualizing project health.
+
 Skills are modular Python components that provide the core functionality of the Faultline platform. They are wrapped as LangChain tools for use by the agent and as MCP tools for use by external IDEs.
 
 ## Execution Modes
@@ -58,7 +61,7 @@ Skills are modular Python components that provide the core functionality of the 
 ## 5. QA Engineer (`skills/qa_engineer.py`)
 **Functional Verification**
 -   **Capabilities**:
-    -   **Dynamic Test Runner**: Generates and executes temporary Pytest scripts within the target project's environment.
+    -   **Edit-Run Workflow**: Automatically pre-loads boilerplate scripts into the run folder. The agent identifies the correct template, edits it to match the project's logic, and executes it.
     -   Verifies that core functionality (e.g., login, CRUD) still works before and after chaos campaigns.
     -   Automatically cleans up generated test artifacts after execution.
 
@@ -72,7 +75,7 @@ Skills are modular Python components that provide the core functionality of the 
 ## 7. Visualizer (`skills/visualizer.py`)
 **Reporting & Analytics**
 -   **Capabilities**:
-    -   **Dependency Graphs**: Generates Mermaid.js diagrams showing file-level dependencies.
+    -   **3D Dependency Graphs**: Generates an interactive Dash application showing structural relationships (imports, calls, inheritance) in a 3D space.
     -   **Vulnerability Maps**: Creates Plotly charts showing finding density across the codebase.
     -   **Quality Scoring**: Calculates a global "Quality Score" (0-100) based on finding severity and functional test pass rates.
     -   **Intent Correlation**: Visualizes documentation coverage vs. implementation reality.

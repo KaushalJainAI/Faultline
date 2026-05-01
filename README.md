@@ -1,5 +1,8 @@
 # Faultline
 
+**Date**: 2026-05-01
+**Description**: The primary entry point and overview for the Faultline AI-assisted QA and chaos engineering platform.
+
 Faultline is an early-stage control plane for AI-assisted QA and chaos engineering. It combines static project mapping, documentation indexing, functional test generation, adversarial HTTP payload execution, log correlation, and proposed patch generation.
 
 The primary way to use Faultline is the **interactive CLI** — `python faultline.py` — which streams agent reasoning, tool calls, and findings to your terminal in real time, and pauses to ask for credentials or permission when the agent needs them. A Django REST control plane is also available for headless / CI use.
@@ -176,8 +179,9 @@ Implemented:
 - Interactive CLI (`faultline.py`) with rich live streaming, HITL credential and permission prompts, and a `request_user_input` tool the agent can call mid-campaign.
 - **Per-run isolated output folder** — every run creates `reports/<project>_<YYYYMMDD>_<HHMMSS>/` so runs are auditable and comparable over time.
 - **Production-readiness score** — deterministic 0–100 score (no LLM text) shown at the top of every pipeline report with severity table and next-steps checklist.
-- **Agent turn counter and phase timing** — terminal shows `[ Agent turn N ]` and elapsed seconds per phase so operators can see exactly what the agent is doing.
-- **`copy_test_boilerplate` tool** — agent copies a working boilerplate from `agent_assets/test_boilerplates/` into the run folder's `testcases/` directory, edits it in-place, then executes it. Keeps token costs low and test structure readable.
+- **Agent turn counter, animations, and ETA** — terminal shows `[ Agent turn N ]` with real-time status spinners and ETA estimates so operators can track progress during long-running LLM cycles.
+- **Automated "Edit-Run" Workflow** — boilerplate scripts are automatically deployed into the project at startup. The agent directly edits these pre-existing templates rather than generating or copying them manually, significantly reducing token costs and hallucination.
+- **Interactive 3D Dependency Graph** — generated report including a self-contained Dash app for exploring AST relationships, root-cause nodes, and failure chains in 3D.
 - Django REST control plane.
 - Database-backed campaign, finding, and tool-run persistence.
 - Dynamic Vault authentication system for static tokens and login endpoints.

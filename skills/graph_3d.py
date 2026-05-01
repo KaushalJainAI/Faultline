@@ -100,10 +100,10 @@ except ImportError:
     sys.exit(1)
 
 # ── Embedded graph data ───────────────────────────────────────────────────────
-NODES    = __NODES__
-LINKS    = __LINKS__
-POS_FULL = __POS_FULL__
-POS_FUNC = __POS_FUNC__
+NODES    = json.loads(r'''__NODES__''')
+LINKS    = json.loads(r'''__LINKS__''')
+POS_FULL = json.loads(r'''__POS_FULL__''')
+POS_FUNC = json.loads(r'''__POS_FUNC__''')
 
 # ── Visual constants ──────────────────────────────────────────────────────────
 NODE_COLORS = {

@@ -1,5 +1,8 @@
 # Vault Authentication System
 
+**Date**: 2026-05-01
+**Description**: Documentation for the dynamic authentication system used to acquire and inject session credentials into campaign tools.
+
 Faultline's "Vault" is a dynamic authentication management system designed to handle session credentials when testing target applications that require authorization. 
 
 The Vault allows you to configure authentication workflows (called `AuthFlows`) that run before the Aegis-Breaker agent starts exploring the target. The acquired credentials are then automatically injected into all subsequent HTTP requests made by the agent's testing tools (like the Attacker or functional test runners).

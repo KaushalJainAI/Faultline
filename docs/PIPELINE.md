@@ -1,5 +1,8 @@
 # Faultline Pipeline Mode
 
+**Date**: 2026-05-01
+**Description**: Detailed documentation of the deterministic testing pipeline, covering syntax checks, project mapping, and production-ready scoring.
+
 The `PipelineRunner` (`core/pipeline.py`) provides a deterministic, fast, and repeatable baseline for analyzing target projects without engaging the LangGraph LLM agent. 
 
 This is an execution mode you can choose when starting a campaign or using the CLI (`python scripts/faultline_cli.py --mode pipeline`).

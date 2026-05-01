@@ -1,5 +1,8 @@
 # Tutorial: Running Your First Campaign
 
+**Date**: 2026-05-01
+**Description**: Step-by-step walkthrough for setting up Faultline, configuring your environment, and running your first campaign.
+
 This tutorial walks you through the process of setting up a Faultline campaign to analyze and test a target Python application.
 
 ## Prerequisites
@@ -26,7 +29,26 @@ Ensure your chosen LLM provider is active. For example, to use OpenRouter:
 set OPENROUTER_API_KEY=sk-or-v1-...
 ```
 
-## Step 3: Trigger the Campaign
+Or to use a local CLI provider (requires no API key, only an active subscription/login):
+
+```bash
+set FAULTLINE_PROVIDER=gemini_cli
+```
+
+## Step 3: Run the Interactive CLI (Recommended)
+
+The easiest way to use Faultline is the interactive agent. It will guide you through the process, ask for missing credentials, and show you real-time progress with animations and ETA tracking.
+
+```bash
+python faultline.py
+```
+
+Follow the on-screen prompts to:
+1.  **Select a Project Directory**: The path to the source code you want to test.
+2.  **Select a Mode**: Usually `hybrid` for a full analysis.
+3.  **Provide Target URL**: The base URL of your running application (e.g., `http://localhost:8000`).
+
+## Step 4: Alternative - Trigger via REST API
 
 Use `curl` or a tool like Postman to start a campaign. You need to provide:
 -   `target_path`: Absolute path to the source code.
@@ -56,12 +78,12 @@ Or watch the terminal logs where `runserver` is running. You will see the agent:
 
 ## Step 5: Review the Results
 
-Once the campaign status moves to `passed` or `failed`, check the `reports/` directory.
+Once the campaign completes, check the `reports/` directory. Each run creates a unique timestamped folder (e.g., `reports/my-app_20240501_103000/`).
 
-1.  Locate `reports/campaign_<id>.md`.
-2.  Open it in a Markdown viewer.
-3.  Review the **Findings Table** for any discovered vulnerabilities.
-4.  Check the **Detailed Findings** for logs, stack traces, and suggested code fixes.
+1.  **`pipeline_report.md`**: View your Production-Readiness Score and static findings.
+2.  **`dependency_graph.py`**: Run `python reports/.../dependency_graph.py` to explore the project structure in 3D.
+3.  **`agent_report.md`**: Review AI-authored vulnerability findings and chaos test results.
+4.  **`testcases/`**: Inspect the functional tests the agent generated and ran.
 
 ### Example Finding
 

@@ -168,3 +168,11 @@ reports/
 !reports/.gitkeep
 .aegis_patches/
 db/
+
+# Faultline credentials (never commit real credentials)
+.faultline/credentials.toml
+
+# media/ — project-specific credential and asset files (real secrets live here)
+media/*.toml
+media/*.env
+!media/.gitkeep

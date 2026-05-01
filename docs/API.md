@@ -1,5 +1,8 @@
 # Faultline API
 
+**Date**: 2026-05-01
+**Description**: Reference documentation for the Faultline Control Plane REST API, including campaign management, project mapping, and Vault authentication.
+
 Base URL:
 
 ```text

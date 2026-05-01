@@ -1,3 +1,8 @@
+"""
+Faultline Agent Tools.
+A collection of LangChain-wrapped tools that expose Faultline skills to the
+Aegis-Breaker agent, including project analysis, test execution, and chaos testing.
+"""
 import json
 import logging
 import asyncio
@@ -29,7 +34,7 @@ def list_project_files(target_dir: str, glob: str = "**/*.py", limit: int = 250)
     logger.info("Tool Call: Listing project files in %s", target_dir)
     try:
         reader = ProjectFileReader(target_dir)
-        return json.dumps(reader.list_files(glob=glob, limit=limit), indent=2)
+        return json.dumps(reader.list_files(glob=glob, limit=limit))
     except Exception as e:
         return f"Error listing project files: {e}"
 
@@ -56,7 +61,7 @@ def run_deterministic_checks(target_dir: str) -> str:
     logger.info("Tool Call: Running deterministic checks for %s", target_dir)
     try:
         checker = DeterministicChecker(target_dir)
-        return json.dumps(checker.run_all(), indent=2)
+        return json.dumps(checker.run_all())
     except Exception as e:
         return f"Error running deterministic checks: {e}"
 
@@ -71,35 +76,46 @@ def analyze_project_structure(target_dir: str) -> str:
     try:
         grapher = ASTGrapher(root_dir=target_dir)
         graph = grapher.analyze_project()
-        return json.dumps(graph, indent=2)
+        return json.dumps(graph)
     except Exception as e:
         return f"Error analyzing project structure: {e}"
 
 @tool
-def query_knowledge_base(query_text: str, db_path: str = "./db/faiss_store") -> str:
+def query_knowledge_base(query_text: str, db_path: str = "") -> str:
     """
     Queries the FAISS semantic knowledge base for documentation intent.
     Helps in understanding the business logic and intended behavior of the system.
+    If indexing is still running in the background, waits for it to complete first.
     """
-    logger.info(f"Tool Call: Querying knowledge base for: {query_text}")
+    logger.info("Tool Call: Querying knowledge base for: %s", query_text)
     try:
-        indexer = SemanticIndexer(db_path=db_path)
+        from core import index_state
+        from skills.semantic_indexer import SemanticIndexer
+        resolved_db = db_path or index_state.current_db_path() or "./db/faiss_store"
+        if index_state.is_indexing():
+            logger.info("query_knowledge_base: waiting for background indexer to finish...")
+            err = index_state.wait_for_index(timeout=300.0)
+            if err:
+                return f"Semantic index not available (indexing failed): {err}"
+        indexer = SemanticIndexer(db_path=resolved_db)
         results = indexer.query(query_text)
-        return json.dumps(results, indent=2)
+        return json.dumps(results)
     except Exception as e:
         return f"Error querying knowledge base: {e}"
 
 @tool
-def index_project_documentation(target_dir: str, db_path: str = "./db/faiss_store") -> str:
+def index_project_documentation(target_dir: str, db_path: str = "") -> str:
     """
     Indexes all project documentation (*.md) into the FAISS semantic index.
-    Should be run at the beginning of a campaign to populate the knowledge base.
+    Uses a per-project cache — skips re-indexing if docs have not changed since last run.
     """
-    logger.info(f"Tool Call: Indexing documentation for {target_dir}")
+    logger.info("Tool Call: Indexing documentation for %s", target_dir)
     try:
-        indexer = SemanticIndexer(db_path=db_path)
+        from skills.semantic_indexer import SemanticIndexer, project_db_path
+        resolved_db = db_path or str(project_db_path("./db/faiss_store", target_dir))
+        indexer = SemanticIndexer(db_path=resolved_db)
         indexer.index_project_docs(target_dir)
-        return "Documentation successfully indexed into FAISS."
+        return f"Documentation indexed at {resolved_db} (cache used if docs unchanged)."
     except Exception as e:
         return f"Error indexing documentation: {e}"
 
@@ -216,6 +232,24 @@ def save_vulnerability_report(report_markdown: str, filename: str = "agent_repor
         out_dir.mkdir(parents=True, exist_ok=True)
         filepath = out_dir / filename
         filepath.write_text(report_markdown, encoding="utf-8")
+
+        # Also append synthesis to the live report
+        try:
+            import asyncio as _asyncio
+            from core.context import live_report_var
+            _lr = live_report_var.get(None)
+            if _lr is not None:
+                try:
+                    loop = _asyncio.get_event_loop()
+                    if loop.is_running():
+                        loop.create_task(_lr.append_section("Agent Synthesis", report_markdown))
+                    else:
+                        loop.run_until_complete(_lr.append_section("Agent Synthesis", report_markdown))
+                except RuntimeError:
+                    pass
+        except Exception:
+            pass
+
         return f"Successfully saved report to {filepath}"
     except Exception as e:
         return f"Error saving report: {e}"
@@ -408,6 +442,31 @@ def record_finding(
             line_number=line_number,
             vision_step=vision_step,
         )
+
+        # Append to the live report immediately so progress survives a crash
+        try:
+            import asyncio as _asyncio
+            from core.context import live_report_var
+            _lr = live_report_var.get(None)
+            if _lr is not None:
+                _finding_data = {
+                    "title": title, "category": cat, "severity": sev,
+                    "summary": summary, "evidence": evidence,
+                    "reproduction_steps": reproduction_steps,
+                    "suggested_fix": suggested_fix,
+                    "file_path": file_path, "line_number": line_number,
+                }
+                try:
+                    loop = _asyncio.get_event_loop()
+                    if loop.is_running():
+                        loop.create_task(_lr.append_finding(_finding_data))
+                    else:
+                        loop.run_until_complete(_lr.append_finding(_finding_data))
+                except RuntimeError:
+                    pass
+        except Exception:
+            pass
+
         return f"Successfully recorded finding '{title}' for vision step {vision_step}."
     except Exception as e:
         return f"Failed to record finding: {e}"
@@ -441,6 +500,448 @@ def request_user_input(question: str, input_type: str = "text") -> str:
         return f"HITL request failed: {exc}"
 
 
+@tool
+def get_credential(role: str = "default") -> str:
+    """
+    Retrieve a named credential for the target application under test.
+
+    Resolution order:
+      0. session_headers_var already set at startup      → return immediately (fastest path)
+      1. token present in .faultline/credentials.toml    → use directly
+      2. refresh_token in file                           → exchange for access token
+      3. username+password in file + login_url configured → auto-login (bearer/api_key/cookie)
+      4. basic auth with username+password               → encode directly, no login needed
+      5. Unavailable — skip auth-dependent tests or call request_user_input explicitly
+
+    role: the named credential set — e.g. "default", "admin", "user", "readonly".
+
+    Returns a JSON string:
+        {
+          "role":       "admin",
+          "token":      "eyJ...",        # empty for basic auth
+          "username":   "admin@example.com",
+          "password":   "...",
+          "auth_header": {"Authorization": "Bearer eyJ..."},
+          "auth_type":  "bearer",
+          "source":     "session" | "file" | "refresh_token" | "file_login" | "basic" | "unavailable",
+          "login_note": "..."            # present when auto-login was attempted
+        }
+    """
+    logger.info("Tool Call: get_credential(role=%s)", role)
+    import json as _json
+    try:
+        from core.credential_store import get_store
+        from core.context import session_headers_var
+
+        store = get_store()
+
+        # ── 0. Session headers already populated at startup ──────────────────
+        # faultline.py runs the full resolution chain before the agent starts.
+        # For the default role we return those headers directly — no login needed.
+        if role == "default":
+            existing = session_headers_var.get()
+            if existing:
+                auth_type = store.auth_type() if store and store.loaded else "bearer"
+                token = ""
+                if "Authorization" in existing:
+                    val = existing["Authorization"]
+                    if val.startswith("Bearer "):
+                        token = val[7:]
+                elif "X-API-Key" in existing:
+                    token = existing["X-API-Key"]
+                username = ""
+                if store and store.loaded:
+                    cred = store.get(role)
+                    if cred:
+                        username = cred.get("username", "").strip() or cred.get("email", "").strip()
+                return _json.dumps({
+                    "role": role,
+                    "token": token,
+                    "username": username,
+                    "password": "",
+                    "auth_header": existing,
+                    "auth_type": auth_type,
+                    "source": "session",
+                    "login_note": "Auth header pre-populated at startup from credentials.",
+                })
+
+        # ── 1. Credentials file ──────────────────────────────────────────────
+        if store and store.loaded:
+            cred = store.get(role)
+            if cred is not None:
+                auth_type = store.auth_type()
+                token = cred.get("token", "").strip()
+                username = cred.get("username", "").strip()
+                email = cred.get("email", "").strip()
+                password = cred.get("password", "").strip()
+
+                refresh_token = cred.get("refresh_token", "").strip()
+
+                # ── 1a. Token already present in file ────────────────────────
+                if token:
+                    header = store.get_auth_header(role) or {}
+                    return _json.dumps({
+                        "role": role,
+                        "token": token,
+                        "username": username,
+                        "password": "",
+                        "auth_header": header,
+                        "auth_type": auth_type,
+                        "source": "file",
+                    })
+
+                # ── 1b. Refresh token → exchange for a fresh access token ────
+                # Works for Google OAuth accounts and any JWT setup where
+                # username/password login is unavailable or impractical.
+                if refresh_token:
+                    base_url = store.target_url().rstrip("/")
+                    refresh_url = store.token_refresh_url()
+                    access, note = _attempt_token_refresh(base_url, refresh_url, refresh_token)
+                    if access:
+                        header = store.get_auth_header(role, token_override=access) or {
+                            "Authorization": f"Bearer {access}"
+                        }
+                        return _json.dumps({
+                            "role": role,
+                            "token": access,
+                            "username": username,
+                            "password": "",
+                            "auth_header": header,
+                            "auth_type": auth_type,
+                            "source": "refresh_token",
+                            "login_note": note,
+                        })
+                    else:
+                        logger.warning(
+                            "Token refresh failed for role '%s': %s — trying login flow",
+                            role, note,
+                        )
+
+                # ── 1c. Basic auth — encode username:password directly ────────
+                if auth_type == "basic":
+                    header = store.get_auth_header(role) or {}
+                    if header:
+                        return _json.dumps({
+                            "role": role,
+                            "token": "",
+                            "username": username,
+                            "password": password,
+                            "auth_header": header,
+                            "auth_type": auth_type,
+                            "source": "basic",
+                        })
+
+                # ── 1d. No token — attempt login with username/password ───────
+                has_creds = password and (username or email)
+                if has_creds and store.login_url():
+                    base_url = store.target_url().rstrip("/")
+                    login_path = store.login_url()
+                    token_obtained, login_note = _attempt_login(
+                        base_url, login_path, username, password, email=email
+                    )
+                    if token_obtained:
+                        header = store.get_auth_header(role, token_override=token_obtained) or {
+                            "Authorization": f"Bearer {token_obtained}"
+                        }
+                        return _json.dumps({
+                            "role": role,
+                            "token": token_obtained,
+                            "username": username,
+                            "password": "",
+                            "auth_header": header,
+                            "auth_type": auth_type,
+                            "source": "file_login",
+                            "login_note": login_note,
+                        })
+                    else:
+                        logger.warning(
+                            "Auto-login failed for role '%s': %s — returning unavailable",
+                            role, login_note,
+                        )
+
+        # ── 2. Nothing available — do NOT auto-prompt via HITL ──────────────────
+        # If you need a token interactively, call request_user_input explicitly.
+        auth_type = store.auth_type() if store and store.loaded else "unknown"
+        logger.warning(
+            "get_credential: role '%s' could not be resolved from file or login flow. "
+            "Call request_user_input to ask the operator for a token.",
+            role,
+        )
+        return _json.dumps({
+            "role": role,
+            "token": "",
+            "username": "",
+            "password": "",
+            "auth_header": {},
+            "auth_type": auth_type,
+            "source": "unavailable",
+            "login_note": (
+                f"Role '{role}' could not be resolved — token missing, "
+                "login failed, or no credentials file found. "
+                "Call request_user_input(input_type='credential') to ask the operator."
+            ),
+        })
+
+    except Exception as exc:
+        return f"get_credential error: {exc}"
+
+
+def _attempt_token_refresh(
+    base_url: str,
+    refresh_url: str,
+    refresh_token: str,
+) -> tuple[str, str]:
+    """
+    Exchange a refresh token for a fresh access token.
+
+    Handles both response styles:
+      - Token in JSON body  (simplejwt default): {"access": "eyJ..."}
+      - Token in Set-Cookie (dj_rest_auth HttpOnly mode): access_token cookie
+
+    Returns (access_token, note). access_token is "" on failure.
+    """
+    import httpx
+
+    url = base_url.rstrip("/") + "/" + refresh_url.lstrip("/")
+    try:
+        resp = httpx.post(
+            url,
+            json={"refresh": refresh_token},
+            headers={"Accept": "application/json"},
+            timeout=15,
+            follow_redirects=True,
+        )
+        if resp.status_code in (200, 201):
+            # Strategy A: token in JSON body
+            try:
+                data = resp.json()
+                for key in ("access", "access_token", "token"):
+                    if data.get(key):
+                        note = f"Token refreshed via POST {url} (key='{key}')"
+                        logger.info(note)
+                        return str(data[key]), note
+            except Exception:
+                pass
+            # Strategy B: token in HttpOnly Set-Cookie
+            for name in ("access_token", "access", "token"):
+                val = resp.cookies.get(name, "")
+                if val:
+                    note = f"Token refreshed via POST {url} (cookie='{name}')"
+                    logger.info(note)
+                    return val, note
+            try:
+                body_preview = resp.text[:300]
+            except Exception:
+                body_preview = "(unreadable)"
+            return "", f"Refresh endpoint returned {resp.status_code} but no access token found. Response: {body_preview}"
+        else:
+            try:
+                err = resp.json()
+            except Exception:
+                err = resp.text[:300]
+            msg = f"Refresh endpoint returned HTTP {resp.status_code}: {err}"
+            logger.warning("_attempt_token_refresh: %s", msg)
+            return "", msg
+    except Exception as exc:
+        msg = f"Request to {url} failed: {exc}"
+        logger.warning("_attempt_token_refresh: %s", msg)
+        return "", msg
+
+
+def _attempt_login(
+    base_url: str,
+    login_path: str,
+    username: str,
+    password: str,
+    email: str = "",
+) -> tuple[str, str]:
+    """
+    POST credentials to the login endpoint and extract the token from the response.
+
+    Handles three authentication styles automatically:
+      1. simplejwt style       — {"username": ..., "password": ...}  → token in JSON body
+      2. allauth/dj-rest-auth  — {"email": ..., "password": ...}     → token in JSON body
+      3. HttpOnly cookie auth  — any of the above                    → token in Set-Cookie header
+         (used when REST_AUTH = {"USE_JWT": True, "JWT_AUTH_HTTPONLY": True})
+
+    When `email` is provided it is used as the email field value; otherwise
+    `username` is tried as both the username and email field values.
+
+    Returns (token_string, note). token_string is "" on all failures.
+    """
+    import httpx
+
+    login_url = base_url.rstrip("/") + "/" + login_path.lstrip("/")
+    token_keys = ["token", "access_token", "access", "key", "auth_token", "jwt"]
+    # Cookie names used by dj_rest_auth JWT_AUTH_COOKIE / REFRESH_COOKIE settings
+    cookie_names = ["access_token", "access", "token", "jwt", "auth_token"]
+
+    # Build attempt list — most specific first
+    bodies: list[dict] = []
+    if username:
+        bodies.append({"username": username, "password": password})
+    if email:
+        bodies.append({"email": email, "password": password})
+        if username:
+            # Combined — some dj-rest-auth setups accept either field
+            bodies.append({"username": username, "email": email, "password": password})
+    elif username and "@" in username:
+        # username looks like an email — try it as the email field too
+        bodies.append({"email": username, "password": password})
+
+    last_error = "no login attempts configured (missing username/email)"
+    for body in bodies:
+        try:
+            resp = httpx.post(
+                login_url,
+                json=body,
+                headers={"Accept": "application/json"},
+                timeout=15,
+                follow_redirects=True,
+            )
+
+            if resp.status_code in (200, 201):
+                # ── Strategy A: token in JSON response body ──────────────────
+                try:
+                    data = resp.json()
+                    # Top-level keys
+                    for key in token_keys:
+                        if data.get(key):
+                            note = (
+                                f"Login OK via POST {login_url} "
+                                f"(body={list(body.keys())}, token_key='{key}')"
+                            )
+                            logger.info(note)
+                            return str(data[key]), note
+                    # One level deep — e.g. {"data": {"access_token": "..."}}
+                    for v in data.values():
+                        if isinstance(v, dict):
+                            for key in token_keys:
+                                if v.get(key):
+                                    note = f"Login OK via POST {login_url} (nested key '{key}')"
+                                    logger.info(note)
+                                    return str(v[key]), note
+                except Exception:
+                    pass
+
+                # ── Strategy B: token in HttpOnly Set-Cookie header ──────────
+                # Used when REST_AUTH = {"USE_JWT": True, "JWT_AUTH_HTTPONLY": True}
+                for name in cookie_names:
+                    cookie_val = resp.cookies.get(name, "")
+                    if cookie_val:
+                        note = (
+                            f"Login OK via POST {login_url} "
+                            f"(body={list(body.keys())}, cookie='{name}')"
+                        )
+                        logger.info(note)
+                        return cookie_val, note
+
+                # 200 but no token found anywhere — log full response for diagnosis
+                try:
+                    body_preview = resp.text[:300]
+                except Exception:
+                    body_preview = "(unreadable)"
+                last_error = (
+                    f"HTTP {resp.status_code} but no token in body or cookies. "
+                    f"Response: {body_preview}"
+                )
+                logger.warning("_attempt_login: %s", last_error)
+
+            else:
+                # Log the actual server error so the user can diagnose credential issues
+                try:
+                    err_detail = resp.json()
+                except Exception:
+                    err_detail = resp.text[:300]
+                last_error = (
+                    f"HTTP {resp.status_code} from {login_url} "
+                    f"(body={list(body.keys())}): {err_detail}"
+                )
+                logger.warning("_attempt_login: %s", last_error)
+
+        except Exception as exc:
+            last_error = f"Request to {login_url} failed: {exc}"
+            logger.warning("_attempt_login: %s", last_error)
+
+    logger.warning("_attempt_login: all attempts failed. Last error: %s", last_error)
+    return "", last_error
+
+
+@tool
+def retrieve_stored_content(run_folder: str, ref_id: str) -> str:
+    """
+    Retrieves the full content of a previously summarised tool result.
+    Use this whenever you see a [REF:<id>] marker in the conversation
+    and need the complete output to continue your analysis.
+    All content is stored in the run_folder for this session.
+    """
+    store_path = Path(run_folder) / "content_store" / f"{ref_id}.txt"
+    if not store_path.exists():
+        return f"Error: No stored content found for ref_id '{ref_id}' in {run_folder}/content_store/"
+    return store_path.read_text(encoding="utf-8")
+
+
+def resolve_credential_at_startup(store) -> "dict | None":
+    """
+    Run the full credential resolution chain for the 'default' role.
+    Called from faultline.py before the agent starts so session_headers_var
+    is pre-populated and the agent never needs to trigger HITL for auth.
+
+    Returns the auth header dict (e.g. {"Authorization": "Bearer eyJ..."})
+    or None if resolution fails.
+    """
+    if not store or not store.loaded:
+        return None
+    cred = store.get("default")
+    if not cred:
+        return None
+
+    auth_type = store.auth_type()
+    token = cred.get("token", "").strip()
+    username = cred.get("username", "").strip()
+    email = cred.get("email", "").strip()
+    password = cred.get("password", "").strip()
+    refresh_token = cred.get("refresh_token", "").strip()
+
+    # 1. Static token in file
+    if token:
+        return store.get_auth_header("default")
+
+    # 2. Refresh token → exchange for access token
+    if refresh_token:
+        base_url = store.target_url().rstrip("/")
+        refresh_url = store.token_refresh_url()
+        access, note = _attempt_token_refresh(base_url, refresh_url, refresh_token)
+        if access:
+            logger.info("Startup auth: token obtained via refresh — %s", note)
+            return store.get_auth_header("default", token_override=access) or {
+                "Authorization": f"Bearer {access}"
+            }
+        logger.warning("Startup auth: refresh token failed — %s", note)
+
+    # 3. Basic auth — no HTTP call needed
+    if auth_type == "basic":
+        header = store.get_auth_header("default")
+        if header:
+            return header
+
+    # 4. Login flow
+    if password and (username or email) and store.login_url():
+        base_url = store.target_url().rstrip("/")
+        login_path = store.login_url()
+        token_obtained, note = _attempt_login(
+            base_url, login_path, username, password, email=email
+        )
+        if token_obtained:
+            logger.info("Startup auth: token obtained via login — %s", note)
+            return store.get_auth_header("default", token_override=token_obtained) or {
+                "Authorization": f"Bearer {token_obtained}"
+            }
+        logger.warning("Startup auth: login failed — %s", note)
+
+    return None
+
+
 # Expose tools for the agent to bind
 FAULTLINE_TOOLS = [
     record_finding,
@@ -463,4 +964,6 @@ FAULTLINE_TOOLS = [
     calculate_project_quality,
     generate_campaign_visuals,
     request_user_input,
+    get_credential,
+    retrieve_stored_content,
 ]

@@ -1,5 +1,8 @@
 # Faultline Architecture
 
+**Date**: 2026-05-01
+**Description**: High-level overview of the Faultline system architecture, domains, core components, and data flow.
+
 Faultline is a control plane for AI-assisted QA and chaos engineering. This document provides a high-level overview of how the system's components interact to analyze, test, and report on target applications.
 
 ## System Overview
@@ -8,10 +11,16 @@ Faultline is divided into three primary domains:
 1.  **Control Plane (Django)**: Manages campaign metadata, findings, tool run history, and the REST API.
 2.  **Vault Authentication (Django)**: Dynamically manages authentication workflows to acquire session credentials for testing.
 3.  **Execution Engine (LangGraph)**: Orchestrates the Aegis-Breaker agent, which uses tools to interact with the target application.
+4.  **Interactive CLI (faultline.py)**: Primary user interface with live streaming, HITL prompts, and run-specific output isolation.
 
 ```mermaid
 graph TD
-    User([User / CLI]) -->|POST /api/v1/campaign/start/| API[REST API]
+    User([User / CLI]) -->|python faultline.py| CLI[Interactive CLI]
+    CLI -->|Execute| Runner[Pipeline Runner]
+    Runner -->|Output| RunFolder[Reports/Run_Folder]
+    CLI -->|Initialize| Agent[Aegis Agent]
+    
+    User -->|POST /api/v1/campaign/start/| API[REST API]
     API -->|Create| CampaignDB[(SQLite Database)]
     API -->|Trigger| Service[Campaign Service]
     
@@ -19,22 +28,25 @@ graph TD
         Service -->|Execute AuthFlow| Vault[Vault Authenticator]
         Vault -->|Pre-flight Auth| Target
         Vault -->|Session Headers| Agent
-        Service -->|Initialize| Agent[Aegis Agent]
+        Service -->|Initialize| Agent
         Agent -->|Invoke| Tools[LangChain Tools]
         Tools -->|Execute| Skills[Skills Library]
         Skills -->|Interact (Authenticated)| Target[Target Application]
         Skills -->|Read Logs| LogCorrelator[Log Correlator]
     end
     
-    subgraph "Persistence"
+    subgraph "Persistence & Reporting"
         Service -->|Record| ToolRun[ToolRun Records]
         Agent -->|Report| Findings[Finding Records]
+        Agent -->|Log| AgentLog[Agent Debug Log]
         Service -->|Generate| Report[Markdown Report]
+        RunFolder -->|Isolation| FileSystem[Reports Directory]
     end
     
     ToolRun --> CampaignDB
     Findings --> CampaignDB
-    Report --> FileSystem[Reports Directory]
+    AgentLog --> RunFolder
+    Report --> RunFolder
 ```
 
 ## Core Components

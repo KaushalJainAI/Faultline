@@ -1,5 +1,8 @@
 # MCP Integration Guide
 
+**Date**: 2026-05-01
+**Description**: Instructions for integrating Faultline as a Model Context Protocol (MCP) server with clients like Claude Desktop and Cursor.
+
 Faultline can function as a **Model Context Protocol (MCP)** server, allowing you to use its specialized QA and chaos engineering tools directly within AI assistants like Claude Desktop, Cursor, or any other MCP-compliant client.
 
 ## Why use Faultline via MCP?
