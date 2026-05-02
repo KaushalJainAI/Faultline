@@ -129,12 +129,24 @@ class QAEngineer:
             with open(test_filepath, "w", encoding="utf-8") as f:
                 f.write(test_code)
 
+            # Strip Django-specific env vars so pytest-django doesn't try to boot
+            # Faultline's own Django app when running tests against the target project.
+            # HTTP-level tests (api, auth, crud, etc.) need no Django setup at all.
+            env = os.environ.copy()
+            env.pop("DJANGO_SETTINGS_MODULE", None)
+            env.pop("DJANGO_CONFIGURATION", None)
+
+            # -p no:django: prevent pytest-django from auto-detecting manage.py in
+            # the target directory and crashing with ImportError on the wrong config.
+            django_flag = [] if test_type == "django_model" else ["-p", "no:django"]
+
             result = subprocess.run(
-                ["pytest", test_filename, "-v", "--tb=short"],
+                ["pytest", test_filename, "-v", "--tb=short"] + django_flag,
                 cwd=self.target_dir,
                 capture_output=True,
                 text=True,
                 timeout=30,
+                env=env,
             )
 
             passed = result.returncode == 0

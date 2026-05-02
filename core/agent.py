@@ -722,12 +722,19 @@ class AegisAgent:
         chaos_vetoed_var.set(False)
 
         # Initialise the live report (no-op if file already exists from a previous session)
+        # Only pass pipeline_report_path when the pipeline actually runs (pipeline/hybrid).
+        # In agent-only mode the file is never created, so passing it would show "not found".
+        _pipeline_report_path = (
+            str(Path(run_folder) / "pipeline_report.md")
+            if mode in ("pipeline", "hybrid")
+            else ""
+        )
         _live_report = LiveReport(
             run_folder=run_folder,
             target_dir=target_dir,
             target_url=target_url,
             mode=mode,
-            pipeline_report_path=str(Path(run_folder) / "pipeline_report.md"),
+            pipeline_report_path=_pipeline_report_path,
         )
         live_report_var.set(_live_report)
 
@@ -784,6 +791,12 @@ class AegisAgent:
             start_time=agent_start,
         )
 
+        # Authoritative accumulated message list.
+        # LangGraph's astream(updates mode) emits per-node deltas, not the full
+        # accumulated state.  We maintain this list separately so checkpoints
+        # and steering-restarts always have the complete conversation history.
+        accumulated_messages: list = list(initial_state.get("messages", []))
+
         # Start the input handler for Esc key detection
         if input_handler:
             input_handler.start()
@@ -796,6 +809,11 @@ class AegisAgent:
             should_restart = True
             while should_restart:
                 should_restart = False
+
+                # Sync initial_state from the authoritative accumulated list so
+                # each restart (steering, model-swap, resume) begins with the
+                # full conversation history rather than just the last event delta.
+                initial_state["messages"] = list(accumulated_messages)
 
                 # Queue-based real-time streaming:
                 # - Producer: pushes events from astream into a queue
@@ -841,10 +859,9 @@ class AegisAgent:
                             )
 
                             if action.type == ActionType.QUIT:
-                                all_msgs = initial_state.get("messages", [])
                                 save_checkpoint(
                                     run_folder=run_folder,
-                                    messages=all_msgs,
+                                    messages=accumulated_messages,
                                     turn=iteration,
                                     target_dir=target_dir,
                                     target_url=target_url,
@@ -869,10 +886,9 @@ class AegisAgent:
                                 return "Agent phase skipped."
 
                             elif action.type == ActionType.SAVE:
-                                all_msgs = initial_state.get("messages", [])
                                 ckpt_path = save_checkpoint(
                                     run_folder=run_folder,
-                                    messages=all_msgs,
+                                    messages=accumulated_messages,
                                     turn=iteration,
                                     target_dir=target_dir,
                                     target_url=target_url,
@@ -891,7 +907,7 @@ class AegisAgent:
                                 steering_msg = HumanMessage(
                                     content=f"[OPERATOR] {action.text}"
                                 )
-                                initial_state["messages"].append(steering_msg)
+                                accumulated_messages.append(steering_msg)
                                 f.write(f"\n=== Operator steering: {action.text} ===\n")
                                 if session_store:
                                     session_store.append(steering_msg)
@@ -949,8 +965,12 @@ class AegisAgent:
                             f.write(f"\n--- Node: {k} ---\n")
 
                             if "messages" in v:
-                                initial_state["messages"] = v.get("messages", initial_state["messages"])
-                                for msg in v["messages"]:
+                                new_msgs = v.get("messages", [])
+                                # Extend the authoritative history — don't replace it.
+                                # astream(updates) emits per-node deltas, not the full state.
+                                accumulated_messages.extend(new_msgs)
+                                initial_state["messages"] = accumulated_messages
+                                for msg in new_msgs:
                                     f.write(f"[{msg.__class__.__name__}]: {msg.content}\n")
                                     if hasattr(msg, "tool_calls") and msg.tool_calls:
                                         f.write(f"Tool Calls: {json.dumps(msg.tool_calls, indent=2)}\n")
@@ -1013,13 +1033,12 @@ class AegisAgent:
                                                 renderer.show_finding("medium", title)
 
                         # ── Update progress tracker ────────────────
-                        all_msgs = initial_state.get("messages", [])
-                        tracker.update(all_msgs, iteration, findings_count)
+                        tracker.update(accumulated_messages, iteration, findings_count)
 
                         # Inject progress context into agent state
                         # (remove previous progress message first to avoid stacking)
-                        initial_state["messages"] = [
-                            m for m in initial_state["messages"]
+                        accumulated_messages = [
+                            m for m in accumulated_messages
                             if not (
                                 isinstance(m, SystemMessage)
                                 and isinstance(m.content, str)
@@ -1027,7 +1046,8 @@ class AegisAgent:
                             )
                         ]
                         progress_msg = tracker.build_context_message()
-                        initial_state["messages"].append(progress_msg)
+                        accumulated_messages.append(progress_msg)
+                        initial_state["messages"] = accumulated_messages
 
                         # Show progress on CLI
                         if renderer:
@@ -1058,7 +1078,8 @@ class AegisAgent:
                                     "Do NOT start new analysis or tool calls."
                                 )
                             )
-                            initial_state["messages"].append(budget_msg)
+                            accumulated_messages.append(budget_msg)
+                            initial_state["messages"] = accumulated_messages
                             f.write("\n=== BUDGET CRITICAL: Forcing wrap-up ===\n")
                             if renderer:
                                 renderer.show_message(
@@ -1075,7 +1096,8 @@ class AegisAgent:
                                     "Finalize your report and end the campaign with [DONE]."
                                 )
                             )
-                            initial_state["messages"].append(turn_msg)
+                            accumulated_messages.append(turn_msg)
+                            initial_state["messages"] = accumulated_messages
                             f.write(f"\n=== TURN LIMIT REACHED: {tracker.max_turns} ===\n")
 
                         # Debounced auto-checkpoint: save every N turns or M seconds
@@ -1085,7 +1107,7 @@ class AegisAgent:
                         if _turns_since >= _CHECKPOINT_INTERVAL_TURNS or _secs_since >= _CHECKPOINT_INTERVAL_SECS:
                             save_checkpoint(
                                 run_folder=run_folder,
-                                messages=initial_state.get("messages", []),
+                                messages=accumulated_messages,
                                 turn=iteration,
                                 target_dir=target_dir,
                                 target_url=target_url,

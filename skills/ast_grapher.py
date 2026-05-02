@@ -5,6 +5,10 @@ from pathlib import Path
 SKIPPED_DIRS = {
     ".git", ".hg", ".mypy_cache", ".pytest_cache", ".ruff_cache",
     "__pycache__", ".aegis_patches", "venv", ".venv", "env", "node_modules",
+    # build artifacts and vendored runtimes
+    "dist", "build", "eggs", ".eggs", "htmlcov", "site-packages",
+    # common embedded/vendored Python runtimes (e.g. WASM sandboxes)
+    "sandbox", "vendor",
 }
 
 

@@ -57,6 +57,10 @@ class DeterministicChecker:
             "serializer_schemas": graph.get("serializer_schemas", []),
         }
 
+    # Hard cap: ignore targets with unreasonably many Python files (e.g. vendored
+    # runtimes or WASM stdlib bundles).  Configurable via FAULTLINE_MAX_PY_FILES.
+    MAX_PY_FILES: int = int(os.environ.get("FAULTLINE_MAX_PY_FILES", "1000"))
+
     def _python_files(self) -> List[Path]:
         files = []
         for path in self.target_dir.rglob("*.py"):
@@ -64,6 +68,8 @@ class DeterministicChecker:
             if any(part in SKIPPED_DIRS for part in rel_parts):
                 continue
             files.append(path)
+            if len(files) >= self.MAX_PY_FILES:
+                break
         return files
 
     def check_syntax(self) -> List[CheckFinding]:
@@ -227,7 +233,11 @@ class DeterministicChecker:
     def run_pytest_collect(self) -> List[CheckFinding]:
         if not (self.target_dir / "pytest.ini").exists() and not any(self.target_dir.rglob("test*.py")):
             return []
-        result = self._run([self.target_python, "-m", "pytest", "--collect-only", "-q"])
+        # -p no:django: prevents pytest-django from picking up Faultline's inherited
+        # DJANGO_SETTINGS_MODULE and failing when the target has a different Django setup.
+        result = self._run([
+            self.target_python, "-m", "pytest", "--collect-only", "-q", "-p", "no:django",
+        ])
         if result.returncode == 0:
             return []
         return [CheckFinding(
@@ -362,8 +372,17 @@ class DeterministicChecker:
         return None
 
     def _run(self, command: List[str]) -> subprocess.CompletedProcess:
+        # Strip Faultline's own Django env from subprocesses so the target project's
+        # pytest/ruff/pip commands aren't confused by the wrong DJANGO_SETTINGS_MODULE.
+        env = os.environ.copy()
+        env.pop("DJANGO_SETTINGS_MODULE", None)
+        env.pop("DJANGO_CONFIGURATION", None)
         try:
-            return subprocess.run(command, cwd=self.target_dir, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=self.timeout)
+            return subprocess.run(
+                command, cwd=self.target_dir, capture_output=True,
+                text=True, encoding="utf-8", errors="replace",
+                timeout=self.timeout, env=env,
+            )
         except FileNotFoundError as e:
             return subprocess.CompletedProcess(command, 127, "", str(e))
         except subprocess.TimeoutExpired as e:

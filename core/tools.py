@@ -22,6 +22,7 @@ from skills.semantic_indexer import SemanticIndexer
 from skills.qa_engineer import QAEngineer
 from skills.visualizer import Visualizer
 from core.cli_provider import ProviderManager
+from core.context import live_report_var, session_headers_var, chaos_vetoed_var
 
 logger = logging.getLogger("FaultlineTools")
 
@@ -143,7 +144,6 @@ async def execute_chaos_campaign(payloads_json: str, target_url: str, log_file: 
     """
     logger.info(f"Tool Call: Executing Chaos Campaign against {target_url}")
     try:
-        from core.context import chaos_vetoed_var
         if chaos_vetoed_var.get():
             chaos_vetoed_var.set(False)  # one-shot veto, reset for next call
             return json.dumps({
@@ -158,7 +158,6 @@ async def execute_chaos_campaign(payloads_json: str, target_url: str, log_file: 
         if not isinstance(payloads, list):
             return "Error: payloads_json must be a JSON array."
 
-        from core.context import session_headers_var
         headers = session_headers_var.get()
         engine = SiegeEngine(target_url, session_headers=headers)
         correlator = LogCorrelator(log_file)
@@ -279,6 +278,80 @@ def save_vulnerability_report(report_markdown: str, filename: str = "agent_repor
         return f"Successfully saved report to {filepath}"
     except Exception as e:
         return f"Error saving report: {e}"
+
+@tool
+def summarize_to_report(heading: str, content: str) -> str:
+    """
+    Appends a freeform summary section to the live report.
+    Use this to record intermediate analysis, architectural insights, or session notes
+    that don't necessarily qualify as a structured finding.
+    """
+    logger.info("Tool Call: summarize_to_report — %s", heading)
+    try:
+        _lr = live_report_var.get(None)
+        if _lr is not None:
+            _lr.append_section_sync(heading, content)
+            return f"Successfully appended section '{heading}' to the live report."
+        return "Error: Live report instance not found in context."
+    except Exception as e:
+        return f"Error appending to report: {e}"
+
+@tool
+def list_run_folder_files(run_folder: str, glob: str = "**/*") -> str:
+    """
+    Lists files in the per-run output directory (reports folder).
+    Use this to verify generated test scripts, logs, or stored content.
+    """
+    logger.info("Tool Call: Listing files in run folder %s", run_folder)
+    try:
+        p = Path(run_folder)
+        if not p.exists():
+            return f"Error: Run folder {run_folder} does not exist."
+        
+        files = []
+        for f in p.glob(glob):
+            if f.is_file():
+                files.append({
+                    "path": str(f.relative_to(p)),
+                    "size": f.stat().st_size,
+                    "mtime": datetime.fromtimestamp(f.stat().st_mtime).isoformat()
+                })
+        return json.dumps(files, indent=2)
+    except Exception as e:
+        return f"Error listing run folder files: {e}"
+
+@tool
+def read_run_folder_file(run_folder: str, relative_path: str, start_line: int = 1, max_lines: int = 500) -> str:
+    """
+    Reads a file from the per-run output directory.
+    Use this to inspect generated test cases or API test data files.
+    """
+    logger.info("Tool Call: Reading run folder file %s", relative_path)
+    try:
+        p = Path(run_folder) / relative_path
+        if not p.exists():
+            return f"Error: File {relative_path} not found in {run_folder}"
+        
+        lines = p.read_text(encoding="utf-8").splitlines()
+        subset = lines[start_line-1 : start_line-1 + max_lines]
+        return "\n".join(subset)
+    except Exception as e:
+        return f"Error reading run folder file: {e}"
+
+@tool
+def discover_api_schema(run_folder: str) -> str:
+    """
+    Retrieves the API schema definitions (serializers) discovered during the pipeline phase.
+    Returns a JSON list of schemas including field types and requirements.
+    """
+    logger.info("Tool Call: Discovering API schemas in %s", run_folder)
+    try:
+        schema_path = Path(run_folder) / "api_schemas.json"
+        if not schema_path.exists():
+            return "No API schemas discovered in this run. Ensure the pipeline phase was executed."
+        return schema_path.read_text(encoding="utf-8")
+    except Exception as e:
+        return f"Error reading API schemas: {e}"
 
 
 _BOILERPLATE_ALIASES = {
@@ -474,7 +547,6 @@ def record_finding(
         # that does not own the asyncio event loop — scheduling a task there
         # silently drops the write.
         try:
-            from core.context import live_report_var
             _lr = live_report_var.get(None)
             if _lr is not None:
                 _finding_data = {
@@ -988,4 +1060,8 @@ FAULTLINE_TOOLS = [
     request_user_input,
     get_credential,
     retrieve_stored_content,
+    summarize_to_report,
+    list_run_folder_files,
+    read_run_folder_file,
+    discover_api_schema,
 ]
