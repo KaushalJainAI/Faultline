@@ -539,14 +539,19 @@ class AegisAgent:
             f"- URL: {state.get('target_url')}\n"
             f"- Log File: {state.get('log_file')}\n"
             f"- Run Folder: {run_folder}  ← write all test scripts and reports here\n"
-            f"- Testcases Dir: {run_folder}/testcases/  ← boilerplate copies go here"
+            f"- Testcases Dir: {run_folder}/testcases/  ← boilerplate copies go here\n"
+            f"- API Test Data: {run_folder}/api_test_data.json  ← read with read_run_folder_file; update as you discover endpoints\n"
+            f"- Transcript: {run_folder}/transcript.txt  ← human-readable conversation log\n"
             f"{header_str}\n\n"
             f"{schema_str}"
             "Aggressively investigate the structure, validate attacks, and fire them. "
             "If writing functional tests, use the Session Headers in your requests to bypass authentication. "
             "Use the API Serializer Schemas above to generate correctly-typed request bodies — "
             "required fields must always be present, optional fields may be omitted or fuzzed. "
-            "Save all generated test scripts to the Testcases Dir above."
+            "Save all generated test scripts to the Testcases Dir above.\n\n"
+            "Run-folder tools: use list_run_folder_files to discover what has been generated, "
+            "read_run_folder_file to inspect any file (api_schemas.json, api_test_data.json, test scripts), "
+            "and summarize_to_report to append intermediate progress notes to live_report.md."
         ))
 
         # Standard LLM (Tool-Calling) Loop with Spinner
@@ -742,6 +747,31 @@ class AegisAgent:
         testcases_dir = Path(run_folder) / "testcases"
         testcases_dir.mkdir(parents=True, exist_ok=True)
 
+        # Create api_test_data.json template if it doesn't exist.
+        # The agent can read this with read_run_folder_file and populate it
+        # with discovered POST payloads and expected GET responses.
+        _api_test_data_path = Path(run_folder) / "api_test_data.json"
+        if not _api_test_data_path.exists():
+            _api_test_data_template = {
+                "_instructions": (
+                    "Populate this file with endpoint-specific test fixtures. "
+                    "Use read_run_folder_file to read it and update via summarize_to_report "
+                    "or by writing a test script that references these values."
+                ),
+                "endpoints": [
+                    {
+                        "endpoint": "/api/example/",
+                        "method": "POST",
+                        "post_data": {"field1": "value1", "field2": "value2"},
+                        "expected_status": 201,
+                        "expected_get_response": {"id": 1, "field1": "value1"},
+                    }
+                ],
+            }
+            _api_test_data_path.write_text(
+                json.dumps(_api_test_data_template, indent=2), encoding="utf-8"
+            )
+
         bp_src_dir = Path(__file__).resolve().parent.parent / "agent_assets" / "test_boilerplates"
 
         copied_paths = []
@@ -800,6 +830,31 @@ class AegisAgent:
         # Start the input handler for Esc key detection
         if input_handler:
             input_handler.start()
+
+        transcript_path = Path(run_folder) / "transcript.txt"
+
+        def _write_transcript(role: str, text: str) -> None:
+            """Append one clean, human-readable line to transcript.txt."""
+            try:
+                ts = time.strftime("%H:%M:%S")
+                header = f"[{ts}] {role}"
+                body = str(text or "").strip()
+                with open(transcript_path, "a", encoding="utf-8") as _tf:
+                    _tf.write(f"\n{'─' * 60}\n{header}\n{'─' * 60}\n{body}\n")
+                    _tf.flush()
+            except Exception:
+                pass
+
+        # Write transcript header before opening the log (header is one-shot)
+        with open(transcript_path, "a", encoding="utf-8") as _tf:
+            _tf.write(
+                f"{'═' * 60}\n"
+                f"Faultline Transcript — Campaign: {campaign_id}\n"
+                f"Started: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"Target: {target_url or target_dir}\n"
+                f"{'═' * 60}\n"
+            )
+        _write_transcript("Operator", initial_prompt)
 
         with open(agent_log_path, "a", encoding="utf-8") as f:
             f.write(f"=== Agent Campaign Started: {campaign_id} ===\n")
@@ -909,6 +964,7 @@ class AegisAgent:
                                 )
                                 accumulated_messages.append(steering_msg)
                                 f.write(f"\n=== Operator steering: {action.text} ===\n")
+                                _write_transcript("Operator (steering)", action.text)
                                 if session_store:
                                     session_store.append(steering_msg)
                                     session_store.append_event("steering", {"text": action.text})
@@ -976,6 +1032,28 @@ class AegisAgent:
                                         f.write(f"Tool Calls: {json.dumps(msg.tool_calls, indent=2)}\n")
                                     if session_store:
                                         session_store.append(msg)
+                                    # ── Clean transcript ───────────────────────
+                                    _cls = msg.__class__.__name__
+                                    if _cls == "AIMessage":
+                                        _tc_names = [
+                                            tc.get("name", "?")
+                                            for tc in (getattr(msg, "tool_calls", None) or [])
+                                        ]
+                                        if _tc_names:
+                                            _write_transcript(
+                                                "Agent (tool calls)",
+                                                "\n".join(f"→ {n}" for n in _tc_names),
+                                            )
+                                        elif getattr(msg, "content", ""):
+                                            _write_transcript("Agent", msg.content)
+                                    elif _cls == "ToolMessage":
+                                        _tname = getattr(msg, "name", "tool")
+                                        _write_transcript(
+                                            f"Tool result [{_tname}]",
+                                            str(getattr(msg, "content", ""))[:2000],
+                                        )
+                                    elif _cls == "HumanMessage":
+                                        _write_transcript("Operator", str(getattr(msg, "content", "")))
                             else:
                                 f.write(f"State Update: {json.dumps(v, default=str)}\n")
                             f.flush()

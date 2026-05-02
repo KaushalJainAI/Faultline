@@ -61,6 +61,9 @@ TOOL_ICONS = {
     "retrieve_stored_content": "📦",
     "copy_test_boilerplate": "📋",
     "discover_api_schema": "🌐",
+    "summarize_to_report": "📝",
+    "list_run_folder_files": "📁",
+    "read_run_folder_file": "📃",
 }
 
 
