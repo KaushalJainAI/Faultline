@@ -188,8 +188,8 @@ REASONING_PROFILES = {
 @dataclass
 class BudgetConfig:
     """Runtime spending limits for a single campaign run."""
-    max_llm_calls: int = int(os.environ.get("FAULTLINE_MAX_LLM_CALLS") or os.environ.get("FAULTLINE_MAX_TURNS") or "40")
-    max_tool_calls: int = int(os.environ.get("FAULTLINE_MAX_TOOL_CALLS", "120"))
+    max_llm_calls: int = int(os.environ.get("FAULTLINE_MAX_LLM_CALLS") or os.environ.get("FAULTLINE_MAX_TURNS") or "120")
+    max_tool_calls: int = int(os.environ.get("FAULTLINE_MAX_TOOL_CALLS", "400"))
     max_input_tokens: int = int(os.environ.get("FAULTLINE_MAX_TOKENS", "500000"))
     max_output_tokens: int = int(os.environ.get("FAULTLINE_MAX_OUTPUT_TOKENS", "4096"))
     reasoning_level: str = os.environ.get("FAULTLINE_REASONING_LEVEL", "normal")

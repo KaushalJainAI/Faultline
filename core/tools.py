@@ -343,40 +343,74 @@ async def execute_chaos_campaign(payloads_json: str, target_url: str, log_file: 
     except Exception as e:
         return f"Execution error: {e}"
 
-def _auto_fan_test_findings(output: str, test_type: str, case_kind: str, run_folder: str) -> None:
+def _auto_fan_test_findings(output: str, test_type: str, case_kind: str, run_folder: str, passed: bool = False) -> None:
     """
-    Parse pytest output and auto-write one finding per FAILED test function.
-    Groups 404 failures separately (likely wrong endpoint) from assertion failures.
-    No-op if live_report_var is not set.
+    Parse pytest output and auto-write findings.
+
+    On FAILED tests: one finding per FAILED function (with severity based on status code).
+    On PASSED tests: scan for unexpected status codes (e.g. 4xx on a happy-path test that
+    "passes" via a loose assertion) and write a lower-severity note.
+    Also writes an informational entry to api_results_log.jsonl for every call seen.
     """
     try:
         from core.context import live_report_var
-        import re as _re
+        import re as _re, json as _json
         _lr = live_report_var.get(None)
         if _lr is None:
             return
 
-        # Extract FAILED lines: "FAILED test_file.py::test_name - AssertionError: ..."
-        failed_lines = _re.findall(r"FAILED\s+(\S+::test_\w+)\s*-?\s*(.*)", output)
-        if not failed_lines:
-            return
+        # ── 1. Always extract AEGIS_RESULT lines for the results log ──
+        if run_folder:
+            try:
+                from pathlib import Path as _Path
+                _results_path = _Path(run_folder) / "api_results_log.jsonl"
+                _ts = __import__("datetime").datetime.now().isoformat(timespec="seconds")
+                _aegis_re = _re.compile(r"AEGIS_RESULT:\s*(\{.*\})")
+                for _line in output.splitlines():
+                    _m = _aegis_re.search(_line)
+                    if _m:
+                        try:
+                            _rec = _json.loads(_m.group(1))
+                            _rec["ts"] = _ts
+                            _rec["test_type"] = test_type
+                            _rec["case_kind"] = case_kind
+                            _rec["passed"] = passed
+                            # Flag unexpected status
+                            _st = _rec.get("status")
+                            if isinstance(_st, int):
+                                _rec["unexpected_status"] = (
+                                    (case_kind == "happy" and _st >= 400) or
+                                    (case_kind == "sad" and 200 <= _st < 300)
+                                )
+                            with open(_results_path, "a", encoding="utf-8") as _f:
+                                _f.write(_json.dumps(_rec, ensure_ascii=False) + "\n")
+                        except Exception:
+                            pass
+            except Exception:
+                pass
 
+        # ── 2. FAILED tests: one finding per FAILED function ──
+        failed_lines = _re.findall(r"FAILED\s+(\S+::test_\w+)\s*-?\s*(.*)", output)
         for test_id, reason in failed_lines:
             reason = reason.strip()
-            # Extract assertion snippet from output context
             evidence_match = _re.search(
                 rf"{_re.escape(test_id.split('::')[1])}.*?\n(.*?E\s+assert.*?)(?=\n[A-Z_]|\Z)",
                 output, _re.DOTALL
             )
             evidence = evidence_match.group(1).strip()[:400] if evidence_match else reason[:400]
 
-            # Classify: 404 = wrong endpoint, 500 = server crash, else = validation failure
             if "404" in evidence or "404" in reason:
-                sev, summary = "medium", f"Endpoint not found (404) — URL may be wrong or not deployed"
+                sev, summary = "medium", "Endpoint not found (404) — URL may be wrong or not deployed"
                 cat = "api"
             elif "500" in evidence or "500" in reason:
-                sev, summary = "high", f"Server error (500) — potential unhandled exception"
+                sev, summary = "high", "Server error (500) — potential unhandled exception"
                 cat = "runtime"
+            elif "401" in evidence or "401" in reason or "403" in evidence or "403" in reason:
+                sev, summary = "medium", "Auth/permission failure — check token or role requirements"
+                cat = "security_candidate"
+            elif "400" in evidence or "400" in reason or "422" in evidence or "422" in reason:
+                sev, summary = "low", "Validation rejection (400/422) — schema or field mismatch"
+                cat = "api"
             else:
                 sev, summary = "low", f"Functional test assertion failed ({test_type}/{case_kind or 'auto'})"
                 cat = "api"
@@ -392,6 +426,42 @@ def _auto_fan_test_findings(output: str, test_type: str, case_kind: str, run_fol
                 "vision_step": 3,
                 "auto": True,
             })
+
+        # ── 3. PASSED tests: flag unexpected status codes in AEGIS_RESULT lines ──
+        if passed:
+            _aegis_re2 = _re.compile(r"AEGIS_RESULT:\s*(\{.*\})")
+            for _line in output.splitlines():
+                _m = _aegis_re2.search(_line)
+                if not _m:
+                    continue
+                try:
+                    _rec = __import__("json").loads(_m.group(1))
+                    _st = _rec.get("status")
+                    if not isinstance(_st, int):
+                        continue
+                    _unexpected = (
+                        (case_kind == "happy" and _st >= 400) or
+                        (case_kind == "sad" and 200 <= _st < 300)
+                    )
+                    if _unexpected:
+                        _url = _rec.get("url", "?")
+                        _lr.append_finding_sync({
+                            "title": f"[AUTO] Unexpected {_st} on {case_kind}-path: {_rec.get('method','?')} {_url}",
+                            "category": "api",
+                            "severity": "medium" if _st >= 500 else "low",
+                            "summary": (
+                                f"Test passed but received HTTP {_st} on a {case_kind}-path call to {_url}. "
+                                "The assertion may be too loose."
+                            ),
+                            "evidence": _json.dumps(_rec, ensure_ascii=False)[:400],
+                            "reproduction_steps": f"Check test asserting {case_kind} behaviour on {_url}",
+                            "file_path": "",
+                            "vision_step": 3,
+                            "auto": True,
+                        })
+                except Exception:
+                    pass
+
     except Exception as _e:
         logger.debug("_auto_fan_test_findings error: %s", _e)
 
@@ -447,8 +517,7 @@ def run_functional_test(
             case_kind=case_kind or None,
         )
         status = "PASSED" if passed else "FAILED"
-        if not passed:
-            _auto_fan_test_findings(output, test_type, case_kind, run_folder)
+        _auto_fan_test_findings(output, test_type, case_kind, run_folder, passed=passed)
         return f"Status: {status}\nOutput:\n{output}"
     except Exception as e:
         return f"Execution error: {e}"

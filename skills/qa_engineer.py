@@ -205,18 +205,47 @@ class QAEngineer:
 
     def _extract_http_calls(self, stdout: str, test_id: str) -> list:
         """
-        Parse pytest stdout for lines printed by httpx calls (e.g. 'response: 200 {...}')
-        and build a minimal call record list for api_calls_log.jsonl.
+        Parse pytest stdout for API call records.
+
+        Priority 1 — structured AEGIS_RESULT lines written by the test itself:
+          AEGIS_RESULT: {"method":"POST","url":"/api/...","payload":{...},"status":201,"response":{...}}
+
+        Priority 2 — heuristic regex for informal print patterns:
+          POST /api/auth/ → 201   |   response: 201 {...}
         """
         calls = []
-        # Match patterns like: "POST /api/auth/registration/ → 201" or
-        # "response: 201 {...}" or pytest print lines containing HTTP status codes
-        _call_re = re.compile(
-            r"(?:(?P<method>GET|POST|PUT|PATCH|DELETE|HEAD)\s+(?P<path>/[^\s]*)\s*(?:→|-+>)?\s*(?P<status>\d{3}))"
-            r"|(?:response[:\s]+(?P<status2>\d{3})\s+(?P<body>.{0,200}))",
-            re.IGNORECASE,
-        )
+        seen_aegis = set()
+
         for line in stdout.splitlines():
+            stripped = line.strip()
+
+            # Priority 1: structured contract line
+            if stripped.startswith("AEGIS_RESULT:"):
+                try:
+                    raw = stripped[len("AEGIS_RESULT:"):].strip()
+                    rec = json.loads(raw)
+                    key = (rec.get("url", ""), rec.get("method", ""), rec.get("status", ""))
+                    if key not in seen_aegis:
+                        seen_aegis.add(key)
+                        calls.append({
+                            "test_id": test_id[:8],
+                            "method": rec.get("method", "?"),
+                            "path": rec.get("url", ""),
+                            "payload": rec.get("payload"),
+                            "status": rec.get("status"),
+                            "response_snippet": json.dumps(rec.get("response", ""))[:400]
+                            if rec.get("response") is not None else rec.get("response_snippet", ""),
+                        })
+                except Exception:
+                    pass
+                continue  # don't double-count with regex
+
+            # Priority 2: heuristic regex
+            _call_re = re.compile(
+                r"(?:(?P<method>GET|POST|PUT|PATCH|DELETE|HEAD)\s+(?P<path>/[^\s]*)\s*(?:→|-+>)?\s*(?P<status>\d{3}))"
+                r"|(?:response[:\s]+(?P<status2>\d{3})\s+(?P<body>.{0,200}))",
+                re.IGNORECASE,
+            )
             m = _call_re.search(line)
             if not m:
                 continue
@@ -229,16 +258,21 @@ class QAEngineer:
                     "test_id": test_id[:8],
                     "method": method,
                     "path": path,
+                    "payload": None,
                     "status": int(status) if status.isdigit() else status,
                     "response_snippet": body_snip,
                 })
         return calls
 
-    def _log_api_calls(self, calls: list) -> None:
-        """Append per-HTTP-call records to <run_folder>/api_calls_log.jsonl."""
+    def _log_api_calls(self, calls: list, test_type: str = "", case_kind: str = "", passed: bool = True) -> None:
+        """
+        Append per-HTTP-call records to api_calls_log.jsonl (compact) and
+        api_results_log.jsonl (full payload + unexpected-status flag).
+        """
         if not self.run_folder or not calls:
             return
         log_path = self.run_folder / "api_calls_log.jsonl"
+        results_path = self.run_folder / "api_results_log.jsonl"
         ts = datetime.now().isoformat(timespec="seconds")
         try:
             with self._ledger_lock:
@@ -246,8 +280,28 @@ class QAEngineer:
                     for c in calls:
                         f.write(json.dumps({"ts": ts, **c}, ensure_ascii=False) + "\n")
                     f.flush()
+                with open(results_path, "a", encoding="utf-8") as f:
+                    for c in calls:
+                        status = c.get("status")
+                        # Flag unexpected: 4xx/5xx on happy path, 2xx on sad path
+                        unexpected = False
+                        if isinstance(status, int):
+                            if case_kind == "happy" and status >= 400:
+                                unexpected = True
+                            elif case_kind == "sad" and 200 <= status < 300:
+                                unexpected = True
+                        record = {
+                            "ts": ts,
+                            "test_type": test_type,
+                            "case_kind": case_kind,
+                            "passed": passed,
+                            "unexpected_status": unexpected,
+                            **c,
+                        }
+                        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+                    f.flush()
         except Exception as e:
-            logger.warning("Could not write api_calls_log.jsonl: %s", e)
+            logger.warning("Could not write api call logs: %s", e)
 
     def _record_test(
         self,
@@ -272,10 +326,11 @@ class QAEngineer:
 
         # Log per-HTTP-call records parsed from stdout
         calls = self._extract_http_calls(stdout or "", test_id)
-        self._log_api_calls(calls)
+        self._log_api_calls(calls, test_type=test_type, case_kind=case_kind, passed=passed)
 
         try:
             ledger = self.run_folder / "generated_tests.json"
+            unexpected_calls = [c for c in calls if c.get("unexpected_status")]
             entry = {
                 "id": test_id,
                 "ts": datetime.now().isoformat(timespec="seconds"),
@@ -284,7 +339,19 @@ class QAEngineer:
                 "passed": passed,
                 "duration_s": duration_s,
                 "source_path": source_path,
-                "http_calls": len(calls),
+                "http_calls_count": len(calls),
+                "http_calls": [
+                    {
+                        "method": c.get("method", "?"),
+                        "path": c.get("path", ""),
+                        "payload": c.get("payload"),
+                        "status": c.get("status"),
+                        "response_snippet": c.get("response_snippet", ""),
+                        "unexpected_status": c.get("unexpected_status", False),
+                    }
+                    for c in calls
+                ],
+                "unexpected_calls_count": len(unexpected_calls),
                 "result_summary": (stdout or "")[-1500:].strip() or (stderr or "")[-500:].strip(),
             }
             if skipped_reason:

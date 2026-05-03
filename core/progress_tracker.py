@@ -119,9 +119,9 @@ def format_checklist(items: List[ChecklistItem]) -> str:
 PHASE_ORDER = ["discovery", "test", "chaos", "report"]
 PHASE_CAPS = {
     "discovery": 15,
-    "test":      30,
-    "chaos":     20,
-    "report":    10,
+    "test":      50,
+    "chaos":     30,
+    "report":    20,
 }
 # Keywords in tool names / checklist items that signal a phase transition
 _PHASE_SIGNALS = {

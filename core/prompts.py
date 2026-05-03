@@ -199,16 +199,45 @@ RULE 3 — ENDPOINT GATE (no test without a verified route):
 RULE 4 — RECORD AS YOU GO (findings must not wait until the end):
   - After run_deterministic_checks: findings are auto-written. Call record_finding for any
     HIGH/CRITICAL issue you want to annotate with a suggested_fix.
-  - After every run_functional_test that returns FAILED: findings are auto-written.
-    Call record_finding with suggested_fix for each confirmed bug.
-  - At 60% token budget: call save_vulnerability_report to flush all findings so far.
+  - After every run_functional_test (PASSED or FAILED): auto-fan runs on all results.
+    Call record_finding with suggested_fix for each confirmed bug or unexpected status code.
+  - Steps 5, 6, 7 are MANDATORY. You MUST call propose_code_patch for confirmed defects,
+    record_finding for every finding, and save_vulnerability_report before ending the run.
+    A campaign without a saved report is incomplete. Do NOT exit before completing these.
+  - At 60% token budget: call save_vulnerability_report to flush all findings so far,
+    then continue the chaos phase. Call it again at the end.
 
 RULE 5 — PHASE DISCIPLINE:
   - Discovery (cap 15 turns): fetch_endpoint_bundle + run_deterministic_checks only.
-  - Test (cap 30 turns): run_functional_test with verified endpoints.
-  - Chaos (cap 20 turns): execute_chaos_campaign.
-  - Report (cap 10 turns): record_finding + save_vulnerability_report.
+  - Test (cap 50 turns): run_functional_test with verified endpoints.
+  - Chaos (cap 30 turns): execute_chaos_campaign.
+  - Report (cap 20 turns): record_finding + propose_code_patch + save_vulnerability_report.
   - When the progress block shows a phase cap warning, STOP and advance immediately.
+
+RULE 6 — PARALLEL TOOL CALLS (critical for efficiency):
+  - You can and MUST emit multiple tool calls in a SINGLE response when they are independent.
+  - Examples of valid parallel batches:
+      • run_functional_test (happy) + run_functional_test (sad) for the SAME endpoint
+      • record_finding (issue A) + record_finding (issue B) — always batch these
+      • record_finding + save_vulnerability_report — ALWAYS call these together
+      • propose_code_patch (file A) + propose_code_patch (file B)
+  - Do NOT wait for one finding to be confirmed before recording another.
+  - Steps 6 (record_finding) and 7 (save_vulnerability_report) run in parallel — always.
+
+RULE 7 — TEST CODE CONTRACT (every test MUST log structured results):
+  Every test function you write MUST print one AEGIS_RESULT line per HTTP call:
+    import json
+    response = client.post("/api/endpoint/", json=payload)
+    print("AEGIS_RESULT:", json.dumps({
+        "method": "POST",
+        "url": "/api/endpoint/",
+        "payload": payload,
+        "status": response.status_code,
+        "response": response.json() if response.headers.get("content-type","").startswith("application/json") else response.text[:200],
+    }))
+  This line is parsed by the harness to build api_results_log.jsonl — the universal
+  record of every API call made during the campaign. Without it, results are invisible.
+  ALL hits (200, 400, 404, 500) must be logged — not just failures.
 """
 
 
@@ -216,27 +245,36 @@ RULE 5 — PHASE DISCIPLINE:
 VISION_REMINDER = """[VISION GUARDRAIL — re-anchor before this turn]
 
 Your standing objective: systematically find vulnerabilities, crash points,
-logic flaws, and verify functional requirements in the target — using the
-seven-step workflow:
+logic flaws, and verify functional requirements in the target — using ALL
+seven steps. Steps 5, 6, 7 are NOT optional.
 
-  1. Baseline (deterministic checks — run_deterministic_checks; findings auto-written)
-  2. Discover (use fetch_endpoint_bundle ONCE; check memory.md before re-reading anything)
-  3. Verify (run_functional_test with VERIFIED endpoints from endpoint_map.json;
-              EVERY endpoint needs at least one HAPPY + one SAD case;
-              pass case_kind and run_folder; findings auto-written on FAILED)
-  4. Mutate & Chaos (execute_chaos_campaign; crashes auto-written as findings)
-  5. Heal & Patch (propose_code_patch for confirmed defects)
-  6. Report (record_finding with suggested_fix for every confirmed issue)
-  7. Synthesize (save_vulnerability_report — call this at 60% budget AND at the end)
+  1. Baseline   — run_deterministic_checks; findings auto-written
+  2. Discover   — fetch_endpoint_bundle ONCE; check memory.md before re-reading
+  3. Verify     — run_functional_test with VERIFIED endpoints from endpoint_map.json
+                  EVERY endpoint: ≥1 HAPPY + ≥1 SAD case; pass case_kind + run_folder
+                  EVERY test: print AEGIS_RESULT JSON for every HTTP call made
+                  findings auto-written on both PASSED (unexpected status) and FAILED
+  4. Chaos      — execute_chaos_campaign; crashes auto-written as findings
+  5. Heal/Patch — propose_code_patch for EVERY confirmed defect (batch multiple in one turn)
+  6. Report     — record_finding for EVERY confirmed issue (batch all in one turn)
+  7. Synthesize — save_vulnerability_report at 60% budget AND at the end; always batch
+                  this with record_finding calls in the SAME response
+
+PARALLEL CALL CHECKLIST (do this before each response):
+  ✓ Can I batch 2+ record_finding calls in this turn? → YES, always do it
+  ✓ Is this the last finding? → batch record_finding + save_vulnerability_report together
+  ✓ Are happy+sad tests for the same endpoint independent? → run both in the same turn
+  ✓ Are patches for different files independent? → propose both in the same turn
 
 Quick-check before this turn:
   - Did I check memory.md for data I already have? (avoid re-reads)
   - Is my next action within the current phase cap?
-  - Have I verified the endpoint path in endpoint_map.json before testing?
-  - Are there pending test failures I haven't called record_finding for?
+  - Have I verified the endpoint in endpoint_map.json before testing?
+  - Did I include AEGIS_RESULT print in my last test? (required for result logging)
+  - Are there findings I haven't recorded yet? → record_finding NOW, don't wait
 
 Rule: every action MUST advance one of these steps.
-If stuck, call record_finding for what you've found, then save_vulnerability_report.
+If stuck: call record_finding for everything found, then save_vulnerability_report.
 
 Operator messages prefixed with [OPERATOR] override defaults — obey them.
 """

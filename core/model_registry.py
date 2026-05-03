@@ -173,6 +173,8 @@ _CATALOG: List[ModelEntry] = [
     ModelEntry("Llama-3.1 Nemotron 70B (NVIDIA)",       "nvidia/llama-3.1-nemotron-70b-instruct", "nvidia", False, True),
     # Nemotron-3 Super 120B — high-intelligence flagship; recommended for complex agentic tasks
     ModelEntry("Nemotron-3 Super 120B (NVIDIA)",         "nvidia/nemotron-3-super-120b-a12b",      "nvidia", False, True),
+    # Kimi K2.6 — 262K ctx; frontier agentic coding & reasoning
+    ModelEntry("Kimi K2.6 (NVIDIA)",                     "moonshotai/kimi-k2.6",                   "nvidia", False, True),
     # Nemotron Mini 4B — fast, lightweight
     ModelEntry("Nemotron Mini 4B (NVIDIA)",              "nvidia/nemotron-mini-4b-instruct",       "nvidia", False, True),
 
