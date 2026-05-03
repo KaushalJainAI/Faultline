@@ -121,7 +121,7 @@ EDGE_COLORS = {
     "inherits": "rgba(217,122,255,0.65)",
 }
 EDGE_WIDTHS = {"contains": 0.5, "imports": 1.0, "calls": 2.0, "inherits": 2.0}
-NODE_SIZES  = {"file": 11, "class": 9, "function": 6, "method": 5}
+NODE_SIZES  = {"file": 14, "class": 9, "function": 6, "method": 5}
 FUNC_TYPES  = {"class", "function", "method"}
 
 BG      = "#0d1117"
@@ -130,6 +130,23 @@ BORDER  = "#30363d"
 TEXT    = "#c9d1d9"
 DIM     = "#6e7681"
 ACCENT  = "#58a6ff"
+
+# ── Package colour palette (assigned by top-level directory) ──────────────────
+_PKG_PALETTE = [
+    "#4dabf7", "#51cf66", "#ffd43b", "#ff922b", "#cc5de8",
+    "#f783ac", "#74c0fc", "#a9e34b", "#ffa94d", "#da77f2",
+]
+_pkg_color_cache: dict = {}
+
+def _pkg_color(node: dict) -> str:
+    # Return a stable colour based on the node top-level package directory.
+    path = node.get("path", "") or node.get("group", "") or ""
+    pkg = path.split("\\")[0].split("/")[0] if path else ""
+    if not pkg:
+        return NODE_COLORS.get(node["type"], "#888888")
+    if pkg not in _pkg_color_cache:
+        _pkg_color_cache[pkg] = _PKG_PALETTE[len(_pkg_color_cache) % len(_PKG_PALETTE)]
+    return _pkg_color_cache[pkg]
 
 # ── Precomputed lookups ───────────────────────────────────────────────────────
 node_map = {n["id"]: n for n in NODES}
@@ -141,6 +158,13 @@ rev_adj = {n["id"]: [] for n in NODES}
 for _l in LINKS:
     if _l["type"] != "contains":
         rev_adj.setdefault(_l["target"], []).append(_l["source"])
+
+# Degree lookup for "hide isolated" option
+_degree: dict = {}
+for _l in LINKS:
+    if _l["type"] != "contains":
+        _degree[_l["source"]] = _degree.get(_l["source"], 0) + 1
+        _degree[_l["target"]] = _degree.get(_l["target"], 0) + 1
 
 
 def bfs_affected(broken_ids):
@@ -157,7 +181,7 @@ def bfs_affected(broken_ids):
 
 
 # ── Figure builder ────────────────────────────────────────────────────────────
-def build_figure(view, broken_ids, search_term=""):
+def build_figure(view, broken_ids, search_term="", hide_isolated=False):
     broken_set   = set(broken_ids)
     affected_set = bfs_affected(broken_set)
 
@@ -171,11 +195,28 @@ def build_figure(view, broken_ids, search_term=""):
             and l["target"] in vis_ids
         ]
         pos = POS_FUNC
+    elif view == "files":
+        # Show only file nodes; aggregate inter-file edges (imports only)
+        vis_nodes = [n for n in NODES if n["type"] == "file"]
+        vis_ids   = {n["id"] for n in vis_nodes}
+        vis_links = [
+            l for l in LINKS
+            if l["type"] == "imports"
+            and l["source"] in vis_ids
+            and l["target"] in vis_ids
+        ]
+        pos = POS_FULL
     else:
         vis_nodes = list(NODES)
         vis_ids   = {n["id"] for n in vis_nodes}
         vis_links = list(LINKS)
         pos = POS_FULL
+
+    if hide_isolated:
+        connected = {l["source"] for l in vis_links} | {l["target"] for l in vis_links}
+        connected |= broken_set & vis_ids
+        vis_nodes = [n for n in vis_nodes if n["id"] in connected]
+        vis_ids   = {n["id"] for n in vis_nodes}
 
     if search_term:
         sl        = search_term.lower()
@@ -228,6 +269,8 @@ def build_figure(view, broken_ids, search_term=""):
             color = BROKEN_COLOR
         elif n["id"] in affected_set:
             color = AFFECTED_COLOR
+        elif t == "file":
+            color = _pkg_color(n)
         else:
             color = NODE_COLORS.get(t, "#888888")
 
@@ -247,19 +290,23 @@ def build_figure(view, broken_ids, search_term=""):
         node_groups[t]["colors"].append(color)
         node_groups[t]["hover"].append(hover)
 
+    show_labels = view == "files"
     for ntype, data in node_groups.items():
         fig.add_trace(go.Scatter3d(
             x=data["x"], y=data["y"], z=data["z"],
-            mode="markers",
+            mode="markers+text" if show_labels else "markers",
             marker=dict(
                 size=NODE_SIZES.get(ntype, 5),
                 color=data["colors"],
                 line=dict(width=0.5, color="rgba(255,255,255,0.15)"),
                 opacity=0.92,
             ),
-            text=data["hover"],
+            text=data["labels"] if show_labels else [],
+            textposition="top center",
+            textfont=dict(size=9, color=TEXT),
             customdata=data["ids"],
-            hovertemplate="%{text}<extra></extra>",
+            hovertext=data["hover"],
+            hovertemplate="%{hovertext}<extra></extra>",
             name=ntype,
             legendgroup=f"node_{ntype}",
             showlegend=True,
@@ -367,10 +414,11 @@ app.layout = html.Div([
             dcc.RadioItems(
                 id="view-radio",
                 options=[
+                    {"label": " Files Only (default)", "value": "files"},
                     {"label": " Full Graph", "value": "full"},
                     {"label": " Functional Tree", "value": "func"},
                 ],
-                value="full",
+                value="files",
                 labelStyle={
                     "display": "block", "fontSize": "11px",
                     "marginBottom": "7px", "cursor": "pointer",
@@ -378,10 +426,18 @@ app.layout = html.Div([
                 inputStyle={"marginRight": "6px", "accentColor": ACCENT},
             ),
             html.P(
-                "Functional Tree hides files & imports — shows only classes, "
-                "functions, and methods connected by calls and inheritance. "
+                "Files Only: one node per file, coloured by package, "
+                "labeled. Full Graph: all nodes. "
+                "Functional Tree: classes/functions connected by calls. "
                 "Red = broken; pink = affected downstream.",
                 style={"fontSize": "9px", "color": DIM, "marginTop": "5px", "lineHeight": "1.5"},
+            ),
+            dcc.Checklist(
+                id="hide-isolated",
+                options=[{"label": " Hide isolated nodes", "value": "hide"}],
+                value=[],
+                style={"fontSize": "11px", "marginTop": "8px"},
+                inputStyle={"marginRight": "6px", "accentColor": ACCENT},
             ),
         ], style=_SS),
 
@@ -430,7 +486,7 @@ app.layout = html.Div([
     html.Div([
         dcc.Graph(
             id="main-graph",
-            figure=build_figure("full", []),
+            figure=build_figure("files", []),
             style={"height": "100vh"},
             config={
                 "displayModeBar": True,
@@ -496,11 +552,12 @@ def toggle_broken(mark_n, reset_n, selected, broken):
     Input("broken-store", "data"),
     Input("view-radio", "value"),
     Input("search-input", "value"),
+    Input("hide-isolated", "value"),
 )
-def update_graph(broken, view, search):
+def update_graph(broken, view, search, hide_isolated):
     broken = broken or []
     affected = bfs_affected(set(broken))
-    fig = build_figure(view or "full", broken, search or "")
+    fig = build_figure(view or "files", broken, search or "", hide_isolated="hide" in (hide_isolated or []))
     return fig, str(len(broken) + len(affected))
 
 

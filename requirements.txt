@@ -25,3 +25,5 @@ questionary>=2.0.0
 # numpy
 # transformers
 # torch
+
+langsmith

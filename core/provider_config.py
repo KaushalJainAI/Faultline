@@ -4,7 +4,7 @@ from typing import Optional, Tuple
 from core.cli_provider import ProviderManager
 
 
-API_PROVIDERS = {"openai", "openrouter", "anthropic", "google"}
+API_PROVIDERS = {"openai", "openrouter", "anthropic", "google", "nvidia"}
 CLI_PROVIDERS = {
     "claude_cli": "claude",
     "claude-code": "claude",
@@ -46,6 +46,11 @@ def get_config_status(target_dir: str = ".") -> Tuple[bool, str]:
         if os.environ.get("GOOGLE_API_KEY"):
             return True, "Google API key configured."
         return False, "GOOGLE_API_KEY is required when FAULTLINE_PROVIDER=google."
+
+    if provider == "nvidia":
+        if os.environ.get("NVIDIA_API_KEY"):
+            return True, "NVIDIA API key configured."
+        return False, "NVIDIA_API_KEY is required when FAULTLINE_PROVIDER=nvidia."
 
     cli_name = get_cli_provider_name(provider)
     if cli_name:

@@ -203,6 +203,52 @@ class QAEngineer:
             logger.warning("Could not save test source copy: %s", e)
             return None
 
+    def _extract_http_calls(self, stdout: str, test_id: str) -> list:
+        """
+        Parse pytest stdout for lines printed by httpx calls (e.g. 'response: 200 {...}')
+        and build a minimal call record list for api_calls_log.jsonl.
+        """
+        calls = []
+        # Match patterns like: "POST /api/auth/registration/ → 201" or
+        # "response: 201 {...}" or pytest print lines containing HTTP status codes
+        _call_re = re.compile(
+            r"(?:(?P<method>GET|POST|PUT|PATCH|DELETE|HEAD)\s+(?P<path>/[^\s]*)\s*(?:→|-+>)?\s*(?P<status>\d{3}))"
+            r"|(?:response[:\s]+(?P<status2>\d{3})\s+(?P<body>.{0,200}))",
+            re.IGNORECASE,
+        )
+        for line in stdout.splitlines():
+            m = _call_re.search(line)
+            if not m:
+                continue
+            status = m.group("status") or m.group("status2") or ""
+            method = m.group("method") or "?"
+            path = m.group("path") or ""
+            body_snip = (m.group("body") or "").strip()[:200]
+            if status:
+                calls.append({
+                    "test_id": test_id[:8],
+                    "method": method,
+                    "path": path,
+                    "status": int(status) if status.isdigit() else status,
+                    "response_snippet": body_snip,
+                })
+        return calls
+
+    def _log_api_calls(self, calls: list) -> None:
+        """Append per-HTTP-call records to <run_folder>/api_calls_log.jsonl."""
+        if not self.run_folder or not calls:
+            return
+        log_path = self.run_folder / "api_calls_log.jsonl"
+        ts = datetime.now().isoformat(timespec="seconds")
+        try:
+            with self._ledger_lock:
+                with open(log_path, "a", encoding="utf-8") as f:
+                    for c in calls:
+                        f.write(json.dumps({"ts": ts, **c}, ensure_ascii=False) + "\n")
+                    f.flush()
+        except Exception as e:
+            logger.warning("Could not write api_calls_log.jsonl: %s", e)
+
     def _record_test(
         self,
         test_id: str,
@@ -216,9 +262,18 @@ class QAEngineer:
         source_path: Optional[str],
         skipped_reason: Optional[str] = None,
     ) -> None:
-        """Append an entry to <run_folder>/generated_tests.json (atomic write)."""
+        """Append a data-only entry to <run_folder>/generated_tests.json (atomic write).
+
+        The code is intentionally excluded — it lives in source_path on disk.
+        This keeps the ledger diffable and machine-readable without embedding source blobs.
+        """
         if not self.run_folder:
             return
+
+        # Log per-HTTP-call records parsed from stdout
+        calls = self._extract_http_calls(stdout or "", test_id)
+        self._log_api_calls(calls)
+
         try:
             ledger = self.run_folder / "generated_tests.json"
             entry = {
@@ -229,9 +284,8 @@ class QAEngineer:
                 "passed": passed,
                 "duration_s": duration_s,
                 "source_path": source_path,
-                "stdout": stdout[-4000:] if stdout else "",
-                "stderr": stderr[-4000:] if stderr else "",
-                "code": test_code,
+                "http_calls": len(calls),
+                "result_summary": (stdout or "")[-1500:].strip() or (stderr or "")[-500:].strip(),
             }
             if skipped_reason:
                 entry["skipped_reason"] = skipped_reason

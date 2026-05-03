@@ -166,6 +166,16 @@ _CATALOG: List[ModelEntry] = [
     ModelEntry("Claude Opus 4.7 (Direct)",   "claude-opus-4-7",                           "anthropic",  False, True),
     ModelEntry("Claude Haiku 4.5 (Direct)",  "claude-haiku-4-5",                          "anthropic",  False, True),
 
+    # ─── Direct NVIDIA NIM ──────────────────────────────────────────────────────
+    # Nemotron Super 49B — recommended for tool-calling; free via NIM API
+    ModelEntry("Llama-3.3 Nemotron Super 49B (NVIDIA)", "nvidia/llama-3.3-nemotron-super-49b-v1", "nvidia", False, True),
+    # Nemotron 70B — high-quality, Llama-3.1 base
+    ModelEntry("Llama-3.1 Nemotron 70B (NVIDIA)",       "nvidia/llama-3.1-nemotron-70b-instruct", "nvidia", False, True),
+    # Nemotron-3 Super 120B — high-intelligence flagship; recommended for complex agentic tasks
+    ModelEntry("Nemotron-3 Super 120B (NVIDIA)",         "nvidia/nemotron-3-super-120b-a12b",      "nvidia", False, True),
+    # Nemotron Mini 4B — fast, lightweight
+    ModelEntry("Nemotron Mini 4B (NVIDIA)",              "nvidia/nemotron-mini-4b-instruct",       "nvidia", False, True),
+
     # ─── Direct Google ──────────────────────────────────────────────────────────
     ModelEntry("Gemini 3.1 Pro (Direct)",    "gemini-3.1-pro-preview",                    "google",     False, True),
     ModelEntry("Gemini 3 Flash (Direct)",    "gemini-3-flash",                            "google",     False, True),

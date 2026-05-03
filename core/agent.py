@@ -188,7 +188,7 @@ REASONING_PROFILES = {
 @dataclass
 class BudgetConfig:
     """Runtime spending limits for a single campaign run."""
-    max_llm_calls: int = int(os.environ.get("FAULTLINE_MAX_LLM_CALLS", "40"))
+    max_llm_calls: int = int(os.environ.get("FAULTLINE_MAX_LLM_CALLS") or os.environ.get("FAULTLINE_MAX_TURNS") or "40")
     max_tool_calls: int = int(os.environ.get("FAULTLINE_MAX_TOOL_CALLS", "120"))
     max_input_tokens: int = int(os.environ.get("FAULTLINE_MAX_TOKENS", "500000"))
     max_output_tokens: int = int(os.environ.get("FAULTLINE_MAX_OUTPUT_TOKENS", "4096"))
@@ -241,6 +241,25 @@ def build_llm(model_override: Optional[str] = None, provider_override: Optional[
     if get_cli_provider_name(provider):
         return None
 
+    # Build an httpx.Timeout aligned with CALL_TIMEOUT_S so that the SDK's
+    # internal per-chunk stream timeout never fires before our asyncio guard.
+    # connect=30s is generous; read=CALL_TIMEOUT_S covers slow TTFT on large
+    # context payloads (the root cause of the stream_chunk_timeout warning).
+    try:
+        import httpx as _httpx
+        _http_timeout = _httpx.Timeout(
+            connect=30.0,
+            read=float(CALL_TIMEOUT_S),
+            write=30.0,
+            pool=30.0,
+        )
+        _http_client = _httpx.Client(timeout=_http_timeout)
+        _async_http_client = _httpx.AsyncClient(timeout=_http_timeout)
+    except ImportError:
+        _http_client = None
+        _async_http_client = None
+        _http_timeout = None
+
     if provider == "anthropic":
         if not ChatAnthropic:
             logger.error("langchain-anthropic not installed")
@@ -249,9 +268,15 @@ def build_llm(model_override: Optional[str] = None, provider_override: Optional[
             model=model_name or "claude-sonnet-4-5",
             anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY"),
             temperature=0.2,
+            timeout=float(CALL_TIMEOUT_S),
         )
         if max_tokens:
             kwargs["max_tokens"] = max_tokens
+        if _async_http_client is not None:
+            try:
+                kwargs["http_client"] = _async_http_client
+            except Exception:
+                pass
         return ChatAnthropic(**kwargs)
 
     if provider == "google":
@@ -262,10 +287,31 @@ def build_llm(model_override: Optional[str] = None, provider_override: Optional[
             model=model_name or "gemini-2.0-flash-001",
             google_api_key=os.environ.get("GOOGLE_API_KEY"),
             temperature=0.2,
+            request_timeout=float(CALL_TIMEOUT_S),
         )
         if max_tokens:
             kwargs["max_output_tokens"] = max_tokens
         return ChatGoogleGenerativeAI(**kwargs)
+
+    if provider == "nvidia":
+        if not ChatOpenAI:
+            logger.error("langchain-openai not installed — cannot use provider 'nvidia'")
+            return None
+        kwargs = {
+            "model": model_name or "nvidia/llama-3.3-nemotron-super-49b-v1",
+            "openai_api_key": os.environ.get("NVIDIA_API_KEY", ""),
+            "openai_api_base": "https://integrate.api.nvidia.com/v1",
+            "temperature": 0.2,
+            "request_timeout": float(CALL_TIMEOUT_S),
+        }
+        if max_tokens:
+            kwargs["max_tokens"] = max_tokens
+        if _async_http_client is not None:
+            try:
+                kwargs["http_async_client"] = _async_http_client
+            except Exception:
+                pass
+        return ChatOpenAI(**kwargs)
 
     if provider in {"openai", "openrouter"}:
         if not ChatOpenAI:
@@ -281,6 +327,9 @@ def build_llm(model_override: Optional[str] = None, provider_override: Optional[
             "openai_api_key": api_key,
             "openai_api_base": base_url,
             "temperature": 0.2,
+            # request_timeout sets the httpx read timeout used during streaming,
+            # preventing stream_chunk_timeout from firing before CALL_TIMEOUT_S.
+            "request_timeout": float(CALL_TIMEOUT_S),
         }
         if max_tokens:
             kwargs["max_tokens"] = max_tokens
@@ -289,6 +338,11 @@ def build_llm(model_override: Optional[str] = None, provider_override: Optional[
                 "HTTP-Referer": "https://github.com/faultline-chaos",
                 "X-Title": "Faultline Aegis-Breaker",
             }
+        if _async_http_client is not None:
+            try:
+                kwargs["http_async_client"] = _async_http_client
+            except Exception:
+                pass
         return ChatOpenAI(**kwargs)
 
     logger.error("Unknown provider: %s", provider)
@@ -336,6 +390,121 @@ def _load_api_schemas(run_folder: str) -> str:
         return "\n".join(lines) + "\n"
     except Exception:
         return ""
+
+
+def _seed_api_test_data(run_folder: str) -> None:
+    """
+    Build api_test_data.json from the api_schemas.json written by the pipeline.
+    Generates per-endpoint fixtures with required fields filled with typed sample
+    values so the agent never has to guess field names or types from scratch.
+    Only runs if api_test_data.json doesn't already exist.
+    """
+    test_data_path = Path(run_folder) / "api_test_data.json"
+    if test_data_path.exists():
+        return
+    schema_path = Path(run_folder) / "api_schemas.json"
+
+    # Type → sensible sample value
+    _SAMPLE: dict = {
+        "CharField": "example_value",
+        "EmailField": "user@example.com",
+        "URLField": "https://example.com",
+        "IntegerField": 1,
+        "FloatField": 1.0,
+        "BooleanField": True,
+        "DateField": "2026-01-01",
+        "DateTimeField": "2026-01-01T00:00:00Z",
+        "UUIDField": "00000000-0000-0000-0000-000000000001",
+        "ListField": [],
+        "DictField": {},
+        "JSONField": {},
+    }
+
+    def _sample(ftype: str) -> object:
+        for k, v in _SAMPLE.items():
+            if k.lower() in ftype.lower():
+                return v
+        if "password" in ftype.lower():
+            return "TestPass123!"
+        return "value"
+
+    schemas: list = []
+    if schema_path.exists():
+        try:
+            schemas = json.loads(schema_path.read_text(encoding="utf-8"))
+        except Exception:
+            schemas = []
+
+    # Build one fixture entry per serializer
+    endpoints: dict = {}
+    for s in schemas:
+        name = s.get("name", "")
+        file_path = s.get("file", "")
+        fields = s.get("fields", [])
+        req = {f["name"]: _sample(f.get("type", "")) for f in fields if f.get("required")}
+        opt = {f["name"]: _sample(f.get("type", "")) for f in fields if not f.get("required")}
+
+        # Guess endpoint path from serializer name (heuristic)
+        guess = name.replace("Serializer", "").lower()
+        guess_path = f"/api/{guess}/" if guess else "/api/unknown/"
+
+        endpoints[guess_path] = {
+            "serializer": name,
+            "file": file_path,
+            "method": "POST",
+            "auth_required": True,
+            "request_body": {**req},
+            "optional_fields": opt,
+            "happy_expected_status": 201,
+            "sad_cases": [
+                {
+                    "name": "missing_required_field",
+                    "mutations": {list(req.keys())[0]: None} if req else {},
+                    "expected_status": 400,
+                }
+            ] if req else [],
+        }
+
+    # Special-case: if we see password-related fields, surface auth fixture shape
+    auth_fixture: dict = {}
+    for s in schemas:
+        name = s.get("name", "")
+        if "register" in name.lower() or "signup" in name.lower():
+            fields = s.get("fields", [])
+            auth_fixture["register"] = {f["name"]: _sample(f.get("type", "")) for f in fields if f.get("required")}
+        if "login" in name.lower():
+            fields = s.get("fields", [])
+            auth_fixture["login"] = {f["name"]: _sample(f.get("type", "")) for f in fields if f.get("required")}
+
+    data = {
+        "_instructions": (
+            "This file is the canonical source of truth for API test payloads. "
+            "Fixtures are seeded from the AST-extracted serializer schemas. "
+            "Read this file with read_run_folder_file before writing any test. "
+            "Update endpoint paths, expected statuses, and request bodies as you discover the real API routes. "
+            "Do NOT hardcode payloads in test scripts — reference this file instead."
+        ),
+        "auth": auth_fixture or {
+            "register_url": "/api/auth/registration/",
+            "login_url": "/api/auth/login/",
+            "token_field": "access",
+            "register_payload": {"username": "testuser", "email": "user@example.com", "password1": "TestPass123!", "password2": "TestPass123!"},
+            "login_payload": {"email": "user@example.com", "password": "TestPass123!"},
+        },
+        "endpoints": endpoints if endpoints else {
+            "/api/example/": {
+                "method": "POST",
+                "auth_required": True,
+                "request_body": {"field1": "value1"},
+                "happy_expected_status": 201,
+                "sad_cases": [],
+            }
+        },
+    }
+    try:
+        test_data_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    except Exception:
+        pass
 
 
 class AegisAgent:
@@ -520,7 +689,35 @@ class AegisAgent:
                 "or CLI login before running campaigns."
             ))]}
 
-        model_with_tools = llm.bind_tools(FAULTLINE_TOOLS)
+        # ── Tool Filtering & Graceful Exit ───────────────────────────────────
+        is_critical = self._llm_calls_used >= (budget.max_llm_calls - 5)
+        is_exhausted = self._llm_calls_used >= budget.max_llm_calls
+
+        active_tools = FAULTLINE_TOOLS
+        if is_critical:
+            # Prune to only reporting and essential read tools
+            active_tools = [
+                t for t in FAULTLINE_TOOLS
+                if t.__name__ in (
+                    "record_finding", "save_vulnerability_report",
+                    "summarize_to_report", "list_run_folder_files",
+                    "read_run_folder_file", "record_decision"
+                )
+            ]
+            logger.info("Budget Critical: pruning toolset to reporting-only")
+            
+            critical_prompt = (
+                "\n[SYSTEM] CRITICAL BUDGET WARNING: You are within 5 turns of the hard turn limit. "
+                "Exploratory tools have been disabled. You MUST now synthesize your final findings, "
+                "ensure all vulnerabilities are recorded with `record_finding`, and call "
+                "`save_vulnerability_report` to generate the final campaign artifact. "
+                "Once the report is saved, end with [DONE]."
+            )
+            # Only inject if not recently warned
+            if not any("CRITICAL BUDGET WARNING" in str(m.content) for m in state["messages"][-3:]):
+                state["messages"].append(SystemMessage(content=critical_prompt))
+
+        model_with_tools = llm.bind_tools(active_tools)
 
         session_headers = state.get("session_headers", {})
         run_folder = state.get("run_folder", "reports/")
@@ -570,6 +767,7 @@ class AegisAgent:
                 messages=state["messages"],
                 run_folder=state.get("run_folder", ""),
                 max_tokens=budget.max_input_tokens,
+                current_turn=self._llm_calls_used,
             )
 
             # Vision guardrail — re-anchor the LLM after turn 1 so the long
@@ -609,39 +807,99 @@ class AegisAgent:
                     except Exception:
                         pass
             _run_folder = state.get("run_folder", "")
-            try:
-                response = await _stream_with_timeout(
-                    model_with_tools, tiered_msgs,
-                    timeout=CALL_TIMEOUT_S,
-                    run_folder=_run_folder,
-                )
-            except asyncio.TimeoutError as te:
-                logger.warning("LLM call timed out: %s", te)
-                if renderer:
-                    renderer.show_message(
-                        f"  [Timeout] LLM did not respond in {CALL_TIMEOUT_S}s — injecting recovery hint.",
-                        style="bold yellow",
+
+            # Patterns that indicate a transient/retryable error from the provider
+            _TRANSIENT = (
+                "429", "529", "503", "rate_limit", "rate limit",
+                "overloaded", "too many requests", "ratelimiterror",
+                "overloaded_error", "service unavailable",
+            )
+            _MAX_RETRIES = 4
+            response = None
+            for _attempt in range(_MAX_RETRIES + 1):
+                try:
+                    response = await _stream_with_timeout(
+                        model_with_tools, tiered_msgs,
+                        timeout=CALL_TIMEOUT_S,
+                        run_folder=_run_folder,
                     )
-                return {"messages": [AIMessage(content=(
-                    f"[TIMEOUT] The previous LLM call exceeded {CALL_TIMEOUT_S}s and was cancelled. "
-                    "For the next step: be extremely concise, pick ONE action only, and avoid large outputs."
-                ))]}
-        except Exception as exc:
-            err_str = str(exc)
-            logger.error("LLM call failed: %s", err_str)
-            # Surface auth errors with clear guidance instead of crashing the run
-            if "401" in err_str or "authentication" in err_str.lower() or "api key" in err_str.lower() or "user not found" in err_str.lower():
-                return {"messages": [AIMessage(content=(
-                    f"[LLM AUTH ERROR] The configured provider rejected the request: {err_str}\n\n"
-                    "Fix: check your FAULTLINE_PROVIDER and matching API key in .env "
-                    "(OPENROUTER_API_KEY / ANTHROPIC_API_KEY / OPENAI_API_KEY / GOOGLE_API_KEY). "
-                    "Alternatively set FAULTLINE_PROVIDER=claude to use the Claude CLI."
-                ))]}
-            # For rate limits / transient errors, surface and continue rather than crash
-            return {"messages": [AIMessage(content=(
-                f"[LLM ERROR] Provider call failed: {err_str}\n\n"
-                "The agent will attempt to continue. If this repeats, check provider status and API key."
-            ))]}
+                    break  # success
+                except asyncio.TimeoutError as te:
+                    logger.warning("LLM call timed out: %s", te)
+                    if renderer:
+                        renderer.show_message(
+                            f"  [Timeout] LLM did not respond in {CALL_TIMEOUT_S}s — injecting recovery hint.",
+                            style="bold yellow",
+                        )
+                    return {"messages": [AIMessage(content=(
+                        f"[TIMEOUT] The previous LLM call exceeded {CALL_TIMEOUT_S}s and was cancelled. "
+                        "For the next step: be extremely concise, pick ONE action only, and avoid large outputs."
+                    ))]}
+                except Exception as exc:
+                    err_str = str(exc)
+                    err_lower = err_str.lower()
+                    is_transient = any(p in err_lower for p in _TRANSIENT)
+
+                    if is_transient and _attempt < _MAX_RETRIES:
+                        delay = 2 ** (_attempt + 1)  # 2s, 4s, 8s, 16s
+                        logger.warning(
+                            "Provider rate-limited (attempt %d/%d), retrying in %ds: %s",
+                            _attempt + 1, _MAX_RETRIES, delay, err_str[:200],
+                        )
+                        if renderer:
+                            renderer.show_message(
+                                f"  [Retry {_attempt + 1}/{_MAX_RETRIES}] Provider rate-limited — "
+                                f"sleeping {delay}s before retry…",
+                                style="yellow",
+                            )
+                        if _run_folder:
+                            try:
+                                log_path = Path(_run_folder) / "campaign_agent.log"
+                                with open(log_path, "a", encoding="utf-8") as _lf:
+                                    _lf.write(
+                                        f"[rate-limit retry {_attempt + 1}/{_MAX_RETRIES}] "
+                                        f"sleeping {delay}s: {err_str[:200]}\n"
+                                    )
+                            except Exception:
+                                pass
+                        await asyncio.sleep(delay)
+                        continue
+
+                    # Non-transient or retries exhausted — surface and continue
+                    logger.error("LLM call failed: %s", err_str)
+                    if "401" in err_str or "authentication" in err_lower or "api key" in err_lower or "user not found" in err_lower:
+                        return {"messages": [AIMessage(content=(
+                            f"[LLM AUTH ERROR] The configured provider rejected the request: {err_str}\n\n"
+                            "Fix: check your FAULTLINE_PROVIDER and matching API key in .env "
+                            "(OPENROUTER_API_KEY / ANTHROPIC_API_KEY / OPENAI_API_KEY / GOOGLE_API_KEY). "
+                            "Alternatively set FAULTLINE_PROVIDER=claude to use the Claude CLI."
+                        ))]}
+                    if is_transient:
+                        return {"messages": [AIMessage(content=(
+                            f"[RATE LIMIT EXHAUSTED] Provider remained rate-limited after "
+                            f"{_MAX_RETRIES} retries: {err_str[:300]}\n\n"
+                            "Record your findings so far and end the campaign."
+                        ))]}
+                    # 400 Bad Request — likely malformed tool args, log and recover
+                    if "400" in err_str:
+                        logger.error("400 Bad Request — likely malformed tool payload: %s", err_str)
+                        if _run_folder:
+                            try:
+                                log_path = Path(_run_folder) / "campaign_agent.log"
+                                with open(log_path, "a", encoding="utf-8") as _lf:
+                                    _lf.write(f"[400 error] {err_str[:500]}\n")
+                            except Exception:
+                                pass
+                        return {"messages": [AIMessage(content=(
+                            f"[BAD REQUEST] The previous tool call had an invalid payload (HTTP 400): "
+                            f"{err_str[:300]}\n\n"
+                            "Re-issue the tool call with corrected arguments. "
+                            "Check required field names and types against the API schema."
+                        ))]}
+                    return {"messages": [AIMessage(content=(
+                        f"[LLM ERROR] Provider call failed: {err_str[:300]}\n\n"
+                        "The agent will attempt to continue. If this repeats, check provider status and API key."
+                    ))]}
         finally:
             ticker_task.cancel()
             if renderer and hasattr(renderer, "_status"):
@@ -747,30 +1005,10 @@ class AegisAgent:
         testcases_dir = Path(run_folder) / "testcases"
         testcases_dir.mkdir(parents=True, exist_ok=True)
 
-        # Create api_test_data.json template if it doesn't exist.
-        # The agent can read this with read_run_folder_file and populate it
-        # with discovered POST payloads and expected GET responses.
-        _api_test_data_path = Path(run_folder) / "api_test_data.json"
-        if not _api_test_data_path.exists():
-            _api_test_data_template = {
-                "_instructions": (
-                    "Populate this file with endpoint-specific test fixtures. "
-                    "Use read_run_folder_file to read it and update via summarize_to_report "
-                    "or by writing a test script that references these values."
-                ),
-                "endpoints": [
-                    {
-                        "endpoint": "/api/example/",
-                        "method": "POST",
-                        "post_data": {"field1": "value1", "field2": "value2"},
-                        "expected_status": 201,
-                        "expected_get_response": {"id": 1, "field1": "value1"},
-                    }
-                ],
-            }
-            _api_test_data_path.write_text(
-                json.dumps(_api_test_data_template, indent=2), encoding="utf-8"
-            )
+        # Seed api_test_data.json from the pipeline's api_schemas.json.
+        # This gives the agent correctly-typed request bodies for every known
+        # serializer so it never has to guess field names or types.
+        _seed_api_test_data(run_folder)
 
         bp_src_dir = Path(__file__).resolve().parent.parent / "agent_assets" / "test_boilerplates"
 
@@ -813,8 +1051,8 @@ class AegisAgent:
         _last_checkpoint_time = agent_start
 
         # Progress tracker — keeps the agent aware of its plan, budget, and progress
-        max_turns = int(os.environ.get("FAULTLINE_MAX_TURNS", "40"))
-        token_budget = int(os.environ.get("FAULTLINE_TOKEN_BUDGET", "120000"))
+        max_turns = int(os.environ.get("FAULTLINE_MAX_TURNS") or os.environ.get("FAULTLINE_MAX_LLM_CALLS") or "40")
+        token_budget = int(os.environ.get("FAULTLINE_TOKEN_BUDGET", "200000"))
         tracker = ProgressTracker(
             max_turns=max_turns,
             token_budget=token_budget,
@@ -880,7 +1118,10 @@ class AegisAgent:
                 async def _producer():
                     """Push LangGraph events into the queue as they arrive."""
                     try:
-                        async for event in self.app.astream(initial_state):
+                        async for event in self.app.astream(
+                            initial_state,
+                            config={"metadata": {"campaign_id": campaign_id}}
+                        ):
                             await event_queue.put(event)
                     except asyncio.CancelledError:
                         pass
@@ -932,12 +1173,20 @@ class AegisAgent:
                                         style="green",
                                     )
                                 f.write(f"\n=== Campaign paused by operator at turn {iteration} ===\n")
+                                try:
+                                    await _live_report.append_session_end(turn=iteration, reason="paused-by-operator")
+                                except Exception:
+                                    pass
                                 return "Campaign paused. Checkpoint saved."
 
                             elif action.type == ActionType.SKIP:
                                 f.write(f"\n=== Agent phase skipped by operator at turn {iteration} ===\n")
                                 if renderer:
                                     renderer.show_message("  Agent phase skipped.", style="yellow")
+                                try:
+                                    await _live_report.append_session_end(turn=iteration, reason="skipped-by-operator")
+                                except Exception:
+                                    pass
                                 return "Agent phase skipped."
 
                             elif action.type == ActionType.SAVE:
@@ -1035,15 +1284,41 @@ class AegisAgent:
                                     # ── Clean transcript ───────────────────────
                                     _cls = msg.__class__.__name__
                                     if _cls == "AIMessage":
-                                        _tc_names = [
-                                            tc.get("name", "?")
-                                            for tc in (getattr(msg, "tool_calls", None) or [])
-                                        ]
+                                        _tc_list = getattr(msg, "tool_calls", None) or []
+                                        _tc_names = [tc.get("name", "?") for tc in _tc_list]
                                         if _tc_names:
                                             _write_transcript(
                                                 "Agent (tool calls)",
                                                 "\n".join(f"→ {n}" for n in _tc_names),
                                             )
+                                            # Auto-emit minimal decision entries for non-record_decision calls
+                                            _flow_path = Path(run_folder) / "agent_flow.md"
+                                            for _tc in _tc_list:
+                                                _tname = _tc.get("name", "")
+                                                if _tname == "record_decision":
+                                                    continue  # agent logged this itself
+                                                _args = _tc.get("args", {}) or {}
+                                                _ts_flow = time.strftime("%H:%M:%S")
+                                                _content = getattr(msg, "content", "") or ""
+                                                _situation = str(_content)[:200].strip() if _content else "(see transcript)"
+                                                _flow_entry = (
+                                                    f"\n### {_ts_flow} — {_tname}\n\n"
+                                                    f"**Tool:** `{_tname}`\n\n"
+                                                    f"**Context:** {_situation}\n\n"
+                                                    f"**Args summary:** {str(_args)[:300]}\n\n---\n"
+                                                )
+                                                try:
+                                                    if not _flow_path.exists():
+                                                        _flow_path.write_text(
+                                                            "# Agent Decision Flow\n\n"
+                                                            "Each block captures one tool call the agent made.\n\n---\n",
+                                                            encoding="utf-8",
+                                                        )
+                                                    with open(_flow_path, "a", encoding="utf-8") as _ff:
+                                                        _ff.write(_flow_entry)
+                                                        _ff.flush()
+                                                except Exception:
+                                                    pass
                                         elif getattr(msg, "content", ""):
                                             _write_transcript("Agent", msg.content)
                                     elif _cls == "ToolMessage":
@@ -1127,12 +1402,27 @@ class AegisAgent:
                         accumulated_messages.append(progress_msg)
                         initial_state["messages"] = accumulated_messages
 
+                        # ── Write heartbeat to live_report.md ─────
+                        _budget_val = max(1, tracker.token_budget)
+                        _pct = min(100, int(tracker.total_tokens_used / _budget_val * 100))
+                        _last_tool = tracker.tools_history[-1] if tracker.tools_history else ""
+                        try:
+                            _live_report.write_heartbeat_sync(
+                                turn=tracker.turn,
+                                max_turns=tracker.max_turns,
+                                llm_calls=self._llm_calls_used,
+                                max_llm_calls=self._budget.max_llm_calls,
+                                token_pct=_pct,
+                                findings=tracker.findings_count,
+                                last_action=_last_tool,
+                            )
+                        except Exception:
+                            pass
+
                         # Show progress on CLI
                         if renderer:
                             done = sum(1 for i in tracker.checklist if i.status == "done")
                             total = len(tracker.checklist)
-                            budget = max(1, tracker.token_budget)
-                            pct = min(100, int(tracker.total_tokens_used / budget * 100))
                             elapsed = time.monotonic() - agent_start
                             elapsed_str = f"{elapsed / 60:.1f}m" if elapsed > 60 else f"{elapsed:.0f}s"
                             renderer.show_progress_bar(
@@ -1140,28 +1430,56 @@ class AegisAgent:
                                 max_turns=tracker.max_turns,
                                 plan_done=done,
                                 plan_total=total,
-                                token_pct=pct,
+                                token_pct=_pct,
                                 findings=tracker.findings_count,
                                 elapsed_str=elapsed_str,
                             )
 
-                        # Budget guardrail: if critical, force wrap-up
+                        # Phase cap guardrail — force phase transition when cap hit
+                        _phase_cap_key = f'_phase_cap_sent_{tracker.current_phase}'
+                        if tracker.is_phase_capped and not getattr(self, _phase_cap_key, False):
+                            setattr(self, _phase_cap_key, True)
+                            from core.progress_tracker import PHASE_ORDER, PHASE_CAPS
+                            _cur_idx = PHASE_ORDER.index(tracker.current_phase)
+                            _next_phase = PHASE_ORDER[min(_cur_idx + 1, len(PHASE_ORDER) - 1)]
+                            _cap = PHASE_CAPS[tracker.current_phase]
+                            phase_msg = HumanMessage(
+                                content=(
+                                    f"[SYSTEM] Phase cap reached: {tracker.current_phase.upper()} "
+                                    f"has used {_cap}/{_cap} allocated LLM turns. "
+                                    f"STOP all {tracker.current_phase} work immediately. "
+                                    f"Advance to {_next_phase.upper()} phase now. "
+                                    f"Do not re-read files or repeat discovery. "
+                                    f"If you have no findings yet, call record_finding for any "
+                                    f"issues observed so far, then proceed."
+                                )
+                            )
+                            accumulated_messages.append(phase_msg)
+                            initial_state["messages"] = accumulated_messages
+                            f.write(f"\n=== PHASE CAP: {tracker.current_phase} ({_cap} turns) — advancing to {_next_phase} ===\n")
+                            if renderer:
+                                renderer.show_message(
+                                    f"  ⚠️  Phase cap reached ({tracker.current_phase}) — forcing transition to {_next_phase}",
+                                    style="bold yellow",
+                                )
+
+                        # Budget guardrail: if critical (now 60%), force wrap-up
                         if tracker.is_budget_critical and not getattr(self, '_budget_warning_sent', False):
                             self._budget_warning_sent = True
                             budget_msg = HumanMessage(
                                 content=(
-                                    "[SYSTEM] Token budget is nearly exhausted (>85%). "
-                                    "You MUST wrap up now: record all findings via record_finding, "
-                                    "then generate the final vulnerability report. "
-                                    "Do NOT start new analysis or tool calls."
+                                    "[SYSTEM] Token budget has passed 60% — "
+                                    "call save_vulnerability_report NOW to preserve all findings so far, "
+                                    "then you may continue with remaining budget. "
+                                    "Do not start new discovery or re-read files already in memory."
                                 )
                             )
                             accumulated_messages.append(budget_msg)
                             initial_state["messages"] = accumulated_messages
-                            f.write("\n=== BUDGET CRITICAL: Forcing wrap-up ===\n")
+                            f.write("\n=== BUDGET 60%: Requesting partial report ===\n")
                             if renderer:
                                 renderer.show_message(
-                                    "  ⚠️  Token budget critical — forcing agent to wrap up",
+                                    "  ⚠️  Token budget at 60% — requesting partial report",
                                     style="bold yellow",
                                 )
 

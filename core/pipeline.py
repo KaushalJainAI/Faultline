@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 from core.tools import analyze_project_structure
 from skills.deterministic_checker import DeterministicChecker
 from skills.graph_3d import Graph3DGenerator
+from langsmith import traceable
 
 
 class PipelineAborted(Exception):
@@ -60,6 +61,7 @@ class PipelineRunner:
             self.run_folder = Path(reports_dir)
         self.run_folder.mkdir(parents=True, exist_ok=True)
 
+    @traceable(name="PipelineRunner.run", run_type="chain")
     def run(
         self,
         include_semantic: bool = True,
@@ -270,19 +272,40 @@ class PipelineRunner:
             for cat in ordered_cats:
                 cat_findings = by_category[cat]
                 lines += [f"### {cat.replace('_', ' ').title()} ({len(cat_findings)})", ""]
+
+                # Group identical findings — same (severity, title) is one issue,
+                # many locations. Collapse duplicates so the report stays scannable.
+                groups: Dict[tuple, Dict] = {}
                 for f in cat_findings:
-                    location = f.get("file_path") or "project-level"
+                    key = (f.get("severity", "medium"), f.get("title", ""))
+                    if key not in groups:
+                        groups[key] = {"finding": f, "locations": []}
+                    loc = f.get("file_path") or "project-level"
                     if f.get("line_number"):
-                        location += f":{f['line_number']}"
-                    sev = f.get("severity", "medium").upper()
+                        loc += f":{f['line_number']}"
+                    groups[key]["locations"].append(loc)
+
+                _MAX_LOCS = 10
+                for (sev_key, title_key), grp in groups.items():
+                    sev = sev_key.upper()
+                    f = grp["finding"]
+                    locs = grp["locations"]
+                    count = len(locs)
+                    suffix = f" — {count} occurrence{'s' if count > 1 else ''}" if count > 1 else ""
                     lines += [
-                        f"#### [{sev}] {f['title']}",
+                        f"#### [{sev}] {title_key}{suffix}",
                         "",
-                        f"- **Location:** `{location}`",
-                        f"- **Summary:** {f.get('summary', '')}",
                     ]
                     if f.get("suggested_fix"):
                         lines.append(f"- **Fix:** {f['suggested_fix']}")
+                    if count == 1:
+                        lines.append(f"- **Location:** `{locs[0]}`")
+                    else:
+                        lines.append(f"- **Locations ({count}):**")
+                        for loc in locs[:_MAX_LOCS]:
+                            lines.append(f"  - `{loc}`")
+                        if count > _MAX_LOCS:
+                            lines.append(f"  - … {count - _MAX_LOCS} more — see `findings.jsonl` for full list")
                     lines.append("")
 
         # --- AST dependency root causes ---

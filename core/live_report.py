@@ -164,10 +164,58 @@ class LiveReport:
                 f.write(block)
                 f.flush()
 
+    def write_heartbeat_sync(
+        self,
+        turn: int,
+        max_turns: int,
+        llm_calls: int,
+        max_llm_calls: int,
+        token_pct: int,
+        findings: int,
+        last_action: str = "",
+    ) -> None:
+        """
+        Rewrite the ## Live Status section near the top of live_report.md so the
+        operator always sees current progress without appending noise.
+        Called after every agent turn.
+        """
+        ts = datetime.now().strftime("%H:%M:%S")
+        bar_filled = round(token_pct / 10)
+        bar = "█" * bar_filled + "░" * (10 - bar_filled)
+        budget_str = f"`{bar}` {token_pct}%"
+        last = f" · last: `{last_action}`" if last_action else ""
+        line = (
+            f"> **[{ts}]** Turn {turn}/{max_turns} "
+            f"· LLM calls {llm_calls}/{max_llm_calls} "
+            f"· tokens {budget_str} "
+            f"· findings {findings}"
+            f"{last}"
+        )
+        status_block = f"\n## Live Status\n\n{line}\n\n---\n"
+
+        with self._sync_lock:
+            try:
+                text = self.path.read_text(encoding="utf-8") if self.path.exists() else ""
+                # Replace existing ## Live Status block if present
+                import re as _re
+                pattern = r"\n## Live Status\n.*?(?=\n## |\Z)"
+                if _re.search(pattern, text, flags=_re.DOTALL):
+                    text = _re.sub(pattern, status_block, text, flags=_re.DOTALL)
+                else:
+                    # Insert after the header separator (first ---)
+                    sep_idx = text.find("\n---\n")
+                    if sep_idx != -1:
+                        text = text[: sep_idx + 5] + status_block + text[sep_idx + 5 :]
+                    else:
+                        text += status_block
+                self.path.write_text(text, encoding="utf-8")
+            except Exception:
+                pass
+
     async def append_session_end(self, turn: int, reason: str = "completed") -> None:
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         block = (
-            f"\n## Session End\n\n"
+            f"\n## Run End\n\n"
             f"- **Timestamp:** {ts}\n"
             f"- **Reason:** {reason}\n"
             f"- **Turns completed:** {turn}\n\n---\n"

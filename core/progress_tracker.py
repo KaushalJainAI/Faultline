@@ -115,6 +115,27 @@ def format_checklist(items: List[ChecklistItem]) -> str:
 # ProgressTracker
 # ---------------------------------------------------------------------------
 
+# Per-phase LLM-call caps (Discovery, Test, Chaos, Report)
+PHASE_ORDER = ["discovery", "test", "chaos", "report"]
+PHASE_CAPS = {
+    "discovery": 15,
+    "test":      30,
+    "chaos":     20,
+    "report":    10,
+}
+# Keywords in tool names / checklist items that signal a phase transition
+_PHASE_SIGNALS = {
+    "discovery": {"list_project_files", "analyze_project_structure", "run_deterministic_checks",
+                  "glob_and_read", "fetch_endpoint_bundle", "index_project_documentation"},
+    "test":      {"run_functional_test", "copy_test_boilerplate", "read_run_folder_file",
+                  "write_run_folder_file"},
+    "chaos":     {"execute_chaos_campaign"},
+    "report":    {"record_finding", "save_vulnerability_report", "summarize_to_report"},
+}
+
+WRAP_UP_BUDGET_PCT = 0.60  # Force wrap-up message at 60% token budget (was 85%)
+
+
 @dataclass
 class ProgressTracker:
     """
@@ -124,8 +145,8 @@ class ProgressTracker:
     """
 
     # Configurable limits
-    max_turns: int = 40
-    token_budget: int = 120_000  # Conservative context window budget
+    max_turns: int = 100
+    token_budget: int = 200_000  # Conservative context window budget
 
     # Running state
     turn: int = 0
@@ -135,6 +156,16 @@ class ProgressTracker:
     start_time: float = field(default_factory=time.monotonic)
     checklist: List[ChecklistItem] = field(default_factory=list)
     tools_history: List[str] = field(default_factory=list)
+
+    # Phase tracking
+    current_phase: str = "discovery"
+    phase_turns: dict = field(default_factory=lambda: {p: 0 for p in PHASE_ORDER})
+
+    def _infer_phase_from_tool(self, tool_name: str) -> Optional[str]:
+        for phase, signals in _PHASE_SIGNALS.items():
+            if tool_name in signals:
+                return phase
+        return None
 
     def update(self, messages: List[BaseMessage], new_iteration: int, new_findings: int) -> None:
         """Update progress from the latest message state."""
@@ -165,13 +196,18 @@ class ProgressTracker:
                     self.checklist = items
                     break
 
-        # Track recent tool names
+        # Track recent tool names + update phase turn counters
         for msg in messages:
             if isinstance(msg, AIMessage):
                 for tc in (getattr(msg, "tool_calls", None) or []):
                     name = tc.get("name", "")
                     if name and (not self.tools_history or self.tools_history[-1] != name):
                         self.tools_history.append(name)
+                    # Advance phase
+                    inferred = self._infer_phase_from_tool(name)
+                    if inferred:
+                        self.current_phase = inferred
+                        self.phase_turns[inferred] = self.phase_turns.get(inferred, 0) + 1
 
     def build_context_message(self) -> SystemMessage:
         """
@@ -181,7 +217,7 @@ class ProgressTracker:
         elapsed = time.monotonic() - self.start_time
         elapsed_str = f"{elapsed / 60:.1f}m" if elapsed > 60 else f"{elapsed:.0f}s"
 
-        tokens_pct = min(100, int(self.total_tokens_used / self.token_budget * 100))
+        tokens_pct = min(100, int(self.total_tokens_used / max(1, self.token_budget) * 100))
         turns_remaining = max(0, self.max_turns - self.turn)
 
         # Checklist summary
@@ -197,11 +233,33 @@ class ProgressTracker:
             checklist_summary = "⚠️ No plan created yet — create one NOW"
             checklist_text = ""
 
-        # Token budget warning
+        # Phase cap warning
+        cap = PHASE_CAPS.get(self.current_phase, 999)
+        phase_used = self.phase_turns.get(self.current_phase, 0)
+        phase_remaining = max(0, cap - phase_used)
+        if phase_used >= cap:
+            phase_warning = (
+                f"⚠️ PHASE CAP REACHED: {self.current_phase.upper()} phase has used "
+                f"{phase_used}/{cap} allocated turns. "
+                f"ADVANCE to the next phase immediately: "
+                f"{PHASE_ORDER[min(PHASE_ORDER.index(self.current_phase)+1, len(PHASE_ORDER)-1)].upper()}."
+            )
+        elif phase_remaining <= 3:
+            phase_warning = (
+                f"⚠️ {phase_remaining} turn(s) left in {self.current_phase.upper()} phase "
+                f"(cap={cap}). Wrap up this phase and advance."
+            )
+        else:
+            phase_warning = f"Phase: {self.current_phase.upper()} — {phase_used}/{cap} turns used"
+
+        # Token budget warning — trigger at 60%, not 85%
         if tokens_pct > 85:
             budget_warning = "⚠️ CRITICAL: Token budget nearly exhausted. Wrap up and write the report NOW."
-        elif tokens_pct > 70:
-            budget_warning = "⚠️ WARNING: Over 70% of token budget used. Start focusing on reporting."
+        elif tokens_pct > 60:
+            budget_warning = (
+                "⚠️ WARNING: Over 60% of token budget used. "
+                "Call save_vulnerability_report NOW to preserve findings, then continue."
+            )
         elif tokens_pct > 50:
             budget_warning = "Note: Over half the token budget used. Prioritize high-value actions."
         else:
@@ -216,6 +274,7 @@ class ProgressTracker:
             f"Tool Calls: {self.tool_calls_made}",
             f"Findings Recorded: {self.findings_count}",
             f"Plan Progress: {checklist_summary}",
+            f"{phase_warning}",
         ]
 
         if budget_warning:
@@ -235,7 +294,12 @@ class ProgressTracker:
 
     @property
     def is_budget_critical(self) -> bool:
-        return self.total_tokens_used > self.token_budget * 0.85
+        return self.total_tokens_used > self.token_budget * WRAP_UP_BUDGET_PCT
+
+    @property
+    def is_phase_capped(self) -> bool:
+        cap = PHASE_CAPS.get(self.current_phase, 999)
+        return self.phase_turns.get(self.current_phase, 0) >= cap
 
     @property
     def is_over_turns(self) -> bool:

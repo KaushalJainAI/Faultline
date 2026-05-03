@@ -39,17 +39,123 @@ def list_project_files(target_dir: str, glob: str = "**/*.py", limit: int = 250)
         return f"Error listing project files: {e}"
 
 @tool
-def read_project_file(target_dir: str, relative_path: str, start_line: int = 1, max_lines: int = 240) -> str:
+def read_project_file(target_dir: str, relative_path: str, start_line: int = 1, max_lines: int = 240, run_folder: str = "") -> str:
     """
     Reads a bounded slice of a project-local file for agent-first investigation.
     Use this before proposing tests, payloads, or patches.
+
+    run_folder: optional — when provided, dedup is enforced. If the file was already
+    read this session and its content is unchanged, a cache-hit notice is returned
+    instead of re-reading. Use retrieve_stored_content(run_folder, ref_id) to get
+    the full content, or read_many_project_files to batch multiple reads.
+
+    NOTE: For reading 2+ files at once use read_many_project_files or glob_and_read.
     """
     logger.info("Tool Call: Reading project file %s", relative_path)
     try:
+        # Dedup check — skip re-read if content unchanged
+        if run_folder:
+            cache = _get_read_cache(run_folder)
+            cached = cache.get(relative_path)
+            if cached:
+                try:
+                    reader_tmp = ProjectFileReader(target_dir)
+                    raw_tmp = reader_tmp.read_file(relative_path, start_line=1, max_lines=99999)
+                    full_content = raw_tmp.get("content", "") if isinstance(raw_tmp, dict) else str(raw_tmp)
+                    if _file_sha(full_content) == cached.get("sha", ""):
+                        return json.dumps({
+                            "cached": True,
+                            "path": relative_path,
+                            "ref_id": cached.get("ref_id", ""),
+                            "turn": cached.get("turn", ""),
+                            "note": (
+                                f"Already read this session (content unchanged) → "
+                                f"REF:{cached.get('ref_id','')}. "
+                                "Call retrieve_stored_content if you need the full content again."
+                            ),
+                        }, indent=2)
+                except Exception:
+                    pass  # Fall through to normal read on any error
+
         reader = ProjectFileReader(target_dir)
-        return json.dumps(reader.read_file(relative_path, start_line, max_lines), indent=2)
+        raw = reader.read_file(relative_path, start_line, max_lines)
+        content = raw.get("content", "") if isinstance(raw, dict) else str(raw)
+        sha = _file_sha(content)
+        ref_id = f"read_project_file__{relative_path.replace('/', '_').replace(chr(92), '_').replace('.', '_')}"
+        if run_folder:
+            _update_read_cache(run_folder, relative_path, ref_id, "current", sha)
+        return json.dumps(raw, indent=2)
     except Exception as e:
         return f"Error reading project file: {e}"
+
+def _auto_fan_deterministic_findings(results: dict) -> None:
+    """
+    Automatically write grouped findings to the live report for every issue
+    category that the deterministic checker returns. Groups by (category, file)
+    and emits one rolled-up finding per group (max 5 examples shown).
+    No-op if live_report_var is not set.
+    """
+    try:
+        from core.context import live_report_var
+        _lr = live_report_var.get(None)
+        if _lr is None:
+            return
+
+        # Map checker result keys → finding category / severity
+        _CATEGORY_MAP = {
+            "syntax_errors":        ("syntax",   "high"),
+            "import_errors":        ("syntax",   "medium"),
+            "ruff_issues":          ("syntax",   "low"),
+            "division_by_zero":     ("runtime",  "high"),
+            "collection_failures":  ("runtime",  "medium"),
+            "dependency_conflicts": ("runtime",  "medium"),
+        }
+
+        for key, (cat, sev) in _CATEGORY_MAP.items():
+            issues = results.get(key)
+            if not issues:
+                continue
+
+            # Normalise to a flat list of strings
+            if isinstance(issues, dict):
+                flat = [f"{f}: {v}" for f, v in issues.items()]
+            elif isinstance(issues, list):
+                flat = [str(i) for i in issues]
+            else:
+                flat = [str(issues)]
+
+            if not flat:
+                continue
+
+            # Group by file prefix when possible
+            from collections import defaultdict
+            groups: dict = defaultdict(list)
+            for item in flat:
+                # Try to extract a file token (first path-like word)
+                import re as _re
+                m = _re.match(r"([^\s:]+\.(py|txt|cfg|toml|ini))", item)
+                file_key = m.group(1) if m else "_general"
+                groups[file_key].append(item)
+
+            for file_key, items in groups.items():
+                top5 = items[:5]
+                remainder = len(items) - len(top5)
+                evidence = "\n".join(f"  - {i}" for i in top5)
+                if remainder:
+                    evidence += f"\n  ... and {remainder} more"
+                _lr.append_finding_sync({
+                    "title": f"[AUTO] {key.replace('_', ' ').title()} in {file_key}",
+                    "category": cat,
+                    "severity": sev,
+                    "summary": f"{len(items)} issue(s) found by deterministic checker ({key})",
+                    "evidence": evidence,
+                    "file_path": file_key if file_key != "_general" else "",
+                    "vision_step": 1,
+                    "auto": True,
+                })
+    except Exception as _e:
+        logger.debug("_auto_fan_deterministic_findings error: %s", _e)
+
 
 @tool
 def run_deterministic_checks(target_dir: str) -> str:
@@ -57,11 +163,17 @@ def run_deterministic_checks(target_dir: str) -> str:
     Runs deterministic pre-agent checks: syntax parsing, missing imports,
     definite division-by-zero hazards, ruff, pip check, pytest collection,
     and AST dependency root-cause propagation.
+
+    Findings are automatically written to the live report — you do NOT need
+    to call record_finding for deterministic issues. Review the returned JSON
+    and use it to prioritise deeper investigation.
     """
     logger.info("Tool Call: Running deterministic checks for %s", target_dir)
     try:
         checker = DeterministicChecker(target_dir)
-        return json.dumps(checker.run_all())
+        results = checker.run_all()
+        _auto_fan_deterministic_findings(results)
+        return json.dumps(results)
     except Exception as e:
         return f"Error running deterministic checks: {e}"
 
@@ -134,6 +246,43 @@ def validate_python_code(code_string: str, target_dir: str) -> str:
     except Exception as e:
         return f"Validation error: {e}"
 
+def _auto_fan_chaos_findings(crashes: list, anomaly_report: dict, target_url: str) -> None:
+    """Auto-write one finding per crash and one rolled-up anomaly finding."""
+    try:
+        from core.context import live_report_var
+        _lr = live_report_var.get(None)
+        if _lr is None:
+            return
+        for crash in crashes[:20]:
+            endpoint = crash.get("endpoint", target_url)
+            _lr.append_finding_sync({
+                "title": f"[AUTO] Server crash at {endpoint}",
+                "category": "runtime",
+                "severity": "high",
+                "summary": f"HTTP 500 / traceback correlated with chaos payload at {endpoint}",
+                "evidence": str(crash.get("traceback", crash))[:600],
+                "reproduction_steps": f"Replay payload: {json.dumps(crash.get('payload', {}))[:300]}",
+                "file_path": crash.get("file", ""),
+                "line_number": crash.get("line", None),
+                "vision_step": 4,
+                "auto": True,
+            })
+        # Rolled-up anomaly finding
+        n = anomaly_report.get("anomaly_count", 0)
+        if n > 0:
+            _lr.append_finding_sync({
+                "title": f"[AUTO] {n} anomalous response(s) during chaos campaign",
+                "category": "security_candidate",
+                "severity": "medium",
+                "summary": anomaly_report.get("summary", f"{n} anomalies detected"),
+                "evidence": json.dumps(anomaly_report.get("anomalies", [])[:5], indent=2)[:600],
+                "vision_step": 4,
+                "auto": True,
+            })
+    except Exception as _e:
+        logger.debug("_auto_fan_chaos_findings error: %s", _e)
+
+
 @tool
 async def execute_chaos_campaign(payloads_json: str, target_url: str, log_file: str) -> str:
     """
@@ -186,11 +335,66 @@ async def execute_chaos_campaign(payloads_json: str, target_url: str, log_file: 
                 "anomalies": anomaly_report["anomalies"][:20],  # cap for context window
             },
         }
+        # Auto-fan crash findings to live report
+        _auto_fan_chaos_findings(crashes, anomaly_report, target_url)
         return json.dumps(summary, indent=2)
     except json.JSONDecodeError:
         return "Error: Invalid JSON format for payloads_json."
     except Exception as e:
         return f"Execution error: {e}"
+
+def _auto_fan_test_findings(output: str, test_type: str, case_kind: str, run_folder: str) -> None:
+    """
+    Parse pytest output and auto-write one finding per FAILED test function.
+    Groups 404 failures separately (likely wrong endpoint) from assertion failures.
+    No-op if live_report_var is not set.
+    """
+    try:
+        from core.context import live_report_var
+        import re as _re
+        _lr = live_report_var.get(None)
+        if _lr is None:
+            return
+
+        # Extract FAILED lines: "FAILED test_file.py::test_name - AssertionError: ..."
+        failed_lines = _re.findall(r"FAILED\s+(\S+::test_\w+)\s*-?\s*(.*)", output)
+        if not failed_lines:
+            return
+
+        for test_id, reason in failed_lines:
+            reason = reason.strip()
+            # Extract assertion snippet from output context
+            evidence_match = _re.search(
+                rf"{_re.escape(test_id.split('::')[1])}.*?\n(.*?E\s+assert.*?)(?=\n[A-Z_]|\Z)",
+                output, _re.DOTALL
+            )
+            evidence = evidence_match.group(1).strip()[:400] if evidence_match else reason[:400]
+
+            # Classify: 404 = wrong endpoint, 500 = server crash, else = validation failure
+            if "404" in evidence or "404" in reason:
+                sev, summary = "medium", f"Endpoint not found (404) — URL may be wrong or not deployed"
+                cat = "api"
+            elif "500" in evidence or "500" in reason:
+                sev, summary = "high", f"Server error (500) — potential unhandled exception"
+                cat = "runtime"
+            else:
+                sev, summary = "low", f"Functional test assertion failed ({test_type}/{case_kind or 'auto'})"
+                cat = "api"
+
+            _lr.append_finding_sync({
+                "title": f"[AUTO] Test failure: {test_id.split('::')[-1]}",
+                "category": cat,
+                "severity": sev,
+                "summary": summary,
+                "evidence": evidence,
+                "reproduction_steps": f"Run: pytest {test_id}",
+                "file_path": test_id.split("::")[0],
+                "vision_step": 3,
+                "auto": True,
+            })
+    except Exception as _e:
+        logger.debug("_auto_fan_test_findings error: %s", _e)
+
 
 @tool
 def run_functional_test(
@@ -208,6 +412,14 @@ def run_functional_test(
     folder (under testcases/ and generated_tests.json) so the suite survives the
     run. Always provide BOTH a "happy" and a "sad" case for each endpoint or
     behaviour you cover.
+
+    IMPORTANT: Before calling this, verify the target endpoint exists in
+    endpoint_map.json (use read_run_folder_file). If the endpoint is missing,
+    update api_test_data.json first via write_run_folder_file.
+
+    On FAILED tests, findings are automatically written to the live report.
+    You still MUST call record_finding for any confirmed vulnerability with
+    full evidence and a suggested fix.
 
     Args:
         test_code: The test code to execute
@@ -235,6 +447,8 @@ def run_functional_test(
             case_kind=case_kind or None,
         )
         status = "PASSED" if passed else "FAILED"
+        if not passed:
+            _auto_fan_test_findings(output, test_type, case_kind, run_folder)
         return f"Status: {status}\nOutput:\n{output}"
     except Exception as e:
         return f"Execution error: {e}"
@@ -446,19 +660,42 @@ def record_finding(
     Use this to persist identified vulnerabilities or issues into the final campaign report.
     """
     logger.info(f"Tool Call: Recording finding '{title}' for step {vision_step}")
+
+    # Normalise category/severity without requiring Django models
+    _VALID_CATS = {"syntax", "runtime", "api", "semantic", "security_candidate"}
+    _VALID_SEVS = {"critical", "high", "medium", "low"}
+    cat = category if category in _VALID_CATS else "runtime"
+    sev = severity if severity in _VALID_SEVS else "medium"
+
+    _finding_data = {
+        "title": title, "category": cat, "severity": sev,
+        "summary": summary, "evidence": evidence,
+        "reproduction_steps": reproduction_steps,
+        "suggested_fix": suggested_fix,
+        "file_path": file_path, "line_number": line_number,
+        "vision_step": vision_step,
+    }
+
+    # ── 1. Live report + findings.jsonl (always runs, no Django needed) ──
+    try:
+        from core.context import live_report_var
+        _lr = live_report_var.get(None)
+        if _lr is not None:
+            _lr.append_finding_sync(_finding_data)
+    except Exception as _e:
+        logger.warning("live_report append failed: %s", _e)
+
+    # ── 2. Django ORM (optional — only works when Campaign DB is available) ──
     try:
         from campaigns.models import Campaign, Finding
         campaign = Campaign.objects.get(id=campaign_id)
-        
-        # Ensure category and severity map safely
-        cat = category if category in Finding.Category.values else Finding.Category.RUNTIME
-        sev = severity if severity in Finding.Severity.values else Finding.Severity.MEDIUM
-        
+        cat_db = category if category in Finding.Category.values else Finding.Category.RUNTIME
+        sev_db = severity if severity in Finding.Severity.values else Finding.Severity.MEDIUM
         Finding.objects.create(
             campaign=campaign,
             title=title[:255],
-            category=cat,
-            severity=sev,
+            category=cat_db,
+            severity=sev_db,
             status="open",
             summary=summary,
             evidence=evidence,
@@ -468,30 +705,11 @@ def record_finding(
             line_number=line_number,
             vision_step=vision_step,
         )
+    except Exception as _db_e:
+        # CLI mode: no Campaign DB row — that's expected; finding already written above
+        logger.debug("Django ORM record skipped (CLI mode likely): %s", _db_e)
 
-        # Append to the live report immediately so progress survives a crash.
-        # Use the synchronous path because @tool wrappers run on a worker thread
-        # that does not own the asyncio event loop — scheduling a task there
-        # silently drops the write.
-        try:
-            from core.context import live_report_var
-            _lr = live_report_var.get(None)
-            if _lr is not None:
-                _finding_data = {
-                    "title": title, "category": cat, "severity": sev,
-                    "summary": summary, "evidence": evidence,
-                    "reproduction_steps": reproduction_steps,
-                    "suggested_fix": suggested_fix,
-                    "file_path": file_path, "line_number": line_number,
-                    "vision_step": vision_step,
-                }
-                _lr.append_finding_sync(_finding_data)
-        except Exception as _e:
-            logger.warning("live_report append failed: %s", _e)
-
-        return f"Successfully recorded finding '{title}' for vision step {vision_step}."
-    except Exception as e:
-        return f"Failed to record finding: {e}"
+    return f"Successfully recorded finding '{title}' for vision step {vision_step}."
 
 @tool
 def request_user_input(question: str, input_type: str = "text") -> str:
@@ -502,7 +720,9 @@ def request_user_input(question: str, input_type: str = "text") -> str:
     ambiguous configuration, or any decision that requires a human in the loop.
 
     input_type:
-      - "credential": prompts for a sensitive value with masked input (passwords, API keys, tokens)
+      - "credential": prompts for a sensitive value with masked input (passwords, API keys, tokens). 
+                     You can also ask the user for a path to a credentials file (e.g. .toml) 
+                     and then read it using read_project_file.
       - "text": prompts for a plain string (usernames, URLs, free-form clarification)
 
     Returns the value the user typed. Returns an empty string if HITL mode is
@@ -586,6 +806,38 @@ def get_credential(role: str = "default") -> str:
                     "source": "session",
                     "login_note": "Auth header pre-populated at startup from credentials.",
                 })
+
+        # ── 0.5 Vault Dynamic Auth Flows ─────────────────────────────────────
+        try:
+            from vault.models import AuthFlow
+            from vault.services import Authenticator
+
+            # Look for an AuthFlow by name (role)
+            flow = AuthFlow.objects.filter(name__iexact=role).first()
+            if flow:
+                base_url = store.target_url() if store else os.environ.get("FAULTLINE_TARGET_URL", "")
+                if base_url:
+                    authenticator = Authenticator(base_url, flow)
+                    vault_res = authenticator.execute_flow()
+                    if vault_res["headers"] or vault_res["cookies"]:
+                        auth_type = flow.auth_type
+                        header = {**vault_res["headers"]}
+                        if vault_res["cookies"]:
+                            c_str = "; ".join(f"{k}={v}" for k, v in vault_res["cookies"].items())
+                            header["Cookie"] = c_str
+
+                        return _json.dumps({
+                            "role": role,
+                            "token": "[VAULT_MANAGED]",
+                            "username": "[VAULT_MANAGED]",
+                            "password": "",
+                            "auth_header": header,
+                            "auth_type": auth_type,
+                            "source": "vault",
+                            "login_note": f"Auth flow '{flow.name}' executed via Vault service.",
+                        })
+        except Exception as vault_err:
+            logger.debug("Vault integration skipped or failed: %s", vault_err)
 
         # ── 1. Credentials file ──────────────────────────────────────────────
         if store and store.loaded:
@@ -958,7 +1210,59 @@ def list_run_folder_files(run_folder: str) -> str:
 
 
 @tool
-def read_run_folder_file(run_folder: str, relative_path: str, max_chars: int = 8000) -> str:
+def record_decision(
+    situation: str,
+    decision: str,
+    rationale: str,
+    run_folder: str,
+    expected_outcome: str = "",
+) -> str:
+    """
+    Record a decision you are about to make into agent_flow.md.
+    Call this BEFORE each significant tool call to document your reasoning.
+    This gives the operator a clear narrative of why each action was taken.
+
+    situation: What you observed / what prompted this decision.
+    decision: What you decided to do next (e.g. "run auth happy-path test").
+    rationale: Why this is the right next step.
+    expected_outcome: What you expect to happen (optional).
+    run_folder: Per-run output directory.
+    """
+    logger.info("Tool Call: record_decision — %s", decision[:80])
+    try:
+        flow_path = Path(run_folder) / "agent_flow.md"
+        ts = datetime.now().strftime("%H:%M:%S")
+
+        # Write header if file is new
+        if not flow_path.exists():
+            flow_path.parent.mkdir(parents=True, exist_ok=True)
+            flow_path.write_text(
+                "# Agent Decision Flow\n\n"
+                "Each block below captures one decision the agent made: "
+                "what situation it saw, what it chose to do, and why.\n\n---\n",
+                encoding="utf-8",
+            )
+
+        block = (
+            f"\n### {ts} — {decision[:80]}\n\n"
+            f"**Situation:** {situation}\n\n"
+            f"**Decision:** {decision}\n\n"
+            f"**Why:** {rationale}\n\n"
+        )
+        if expected_outcome:
+            block += f"**Expected outcome:** {expected_outcome}\n\n"
+        block += "---\n"
+
+        with open(flow_path, "a", encoding="utf-8") as f:
+            f.write(block)
+            f.flush()
+        return f"Decision logged to agent_flow.md."
+    except Exception as e:
+        return f"Error writing decision: {e}"
+
+
+@tool
+def read_run_folder_file(run_folder: str, relative_path: str, max_chars: int = 8000, skip_cache: bool = False) -> str:
     """
     Reads a file from the per-run output directory (run_folder).
     Use this to inspect api_schemas.json, api_test_data.json, test scripts,
@@ -966,25 +1270,353 @@ def read_run_folder_file(run_folder: str, relative_path: str, max_chars: int = 8
 
     relative_path: Path relative to run_folder, e.g. "api_schemas.json" or "testcases/test_auth.py".
     max_chars: Maximum characters to return (default 8000). Pass 0 for unlimited.
+    skip_cache: Set True to force a fresh read even if the file is cached (e.g. after write_run_folder_file).
+
+    NOTE: For reading multiple run-folder files at once use read_many_run_folder_files.
     """
     logger.info("Tool Call: read_run_folder_file — %s / %s", run_folder, relative_path)
     try:
-        target = Path(run_folder) / relative_path
+        base = Path(run_folder).resolve()
+        target = (base / relative_path).resolve()
+        if not str(target).startswith(str(base)):
+            return "Error: Path traversal outside run_folder is not allowed."
         if not target.exists():
             return f"Error: '{relative_path}' not found in run_folder '{run_folder}'."
         if not target.is_file():
             return f"Error: '{relative_path}' is not a file."
-        # Resolve to ensure path stays within run_folder (no directory traversal)
-        base = Path(run_folder).resolve()
-        resolved = target.resolve()
-        if not str(resolved).startswith(str(base)):
-            return "Error: Path traversal outside run_folder is not allowed."
-        text = resolved.read_text(encoding="utf-8", errors="replace")
+
+        text = target.read_text(encoding="utf-8", errors="replace")
+        sha = _file_sha(text)
+
+        # Dedup check — only for mutable artifacts worth caching
+        if not skip_cache:
+            cache = _get_read_cache(run_folder)
+            cache_key = f"runfolder::{relative_path}"
+            cached = cache.get(cache_key)
+            if cached and cached.get("sha") == sha:
+                excerpt = text[:300].rstrip()
+                return json.dumps({
+                    "cached": True,
+                    "path": relative_path,
+                    "ref_id": cached.get("ref_id", ""),
+                    "turn": cached.get("turn", ""),
+                    "excerpt": excerpt,
+                    "note": (
+                        f"Already read this session (content unchanged) → "
+                        f"REF:{cached.get('ref_id','')}. "
+                        "Pass skip_cache=true to force a fresh read after write_run_folder_file."
+                    ),
+                }, indent=2)
+            ref_id = f"run_folder__{relative_path.replace('/', '_').replace(chr(92), '_').replace('.', '_')}"
+            _update_read_cache(run_folder, cache_key, ref_id, "current", sha)
+
         if max_chars and len(text) > max_chars:
             text = text[:max_chars] + f"\n\n[... truncated at {max_chars} chars ...]"
         return text
     except Exception as e:
         return f"Error reading run folder file: {e}"
+
+
+# ---------------------------------------------------------------------------
+# Bulk read tools — fetch multiple files in a single LLM round-trip
+# ---------------------------------------------------------------------------
+
+_READ_CACHE_FILE = "read_cache.json"
+_MAX_BULK_FILES = 30
+
+
+def _get_read_cache(run_folder: str) -> dict:
+    """Load per-run read cache from disk. Returns {} on any error."""
+    if not run_folder:
+        return {}
+    try:
+        p = Path(run_folder) / _READ_CACHE_FILE
+        if p.exists():
+            return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {}
+
+
+def _update_read_cache(run_folder: str, path_key: str, ref_id: str, turn_hint: str, sha: str) -> None:
+    """Upsert one entry in the read cache."""
+    if not run_folder:
+        return
+    try:
+        p = Path(run_folder) / _READ_CACHE_FILE
+        cache = _get_read_cache(run_folder)
+        cache[path_key] = {"ref_id": ref_id, "turn": turn_hint, "sha": sha}
+        p.write_text(json.dumps(cache, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _file_sha(content: str) -> str:
+    import hashlib
+    return hashlib.md5(content.encode("utf-8", errors="replace")).hexdigest()[:8]
+
+
+@tool
+def read_many_project_files(
+    target_dir: str,
+    paths: list,
+    run_folder: str = "",
+    max_lines_each: int = 200,
+) -> str:
+    """
+    Reads multiple project files in a single call, returning a combined JSON map.
+    Use this whenever you need to read 2+ independent files — it replaces N separate
+    read_project_file calls with 1, saving N-1 LLM round-trips.
+
+    paths: list of relative paths inside target_dir, e.g. ["core/urls.py", "orchestrator/urls.py"].
+    run_folder: optional — when provided, updates the read cache so repeated reads are skipped.
+    max_lines_each: line limit applied per file (default 200).
+
+    Returns: JSON object keyed by relative path, each value:
+      {"content": "...", "total_lines": N, "truncated": bool, "sha": "..."}
+    Already-cached unchanged files are noted as "cached" with their ref_id.
+    """
+    logger.info("Tool Call: read_many_project_files — %d paths in %s", len(paths or []), target_dir)
+    if not paths:
+        return json.dumps({"error": "paths list is empty"})
+
+    cache = _get_read_cache(run_folder) if run_folder else {}
+    reader = ProjectFileReader(target_dir)
+    result: dict = {}
+    cached_count = 0
+
+    for rel_path in paths[:_MAX_BULK_FILES]:
+        try:
+            raw = reader.read_file(rel_path, start_line=1, max_lines=max_lines_each)
+            content = raw.get("content", "") if isinstance(raw, dict) else str(raw)
+            total = raw.get("total_lines", content.count("\n") + 1) if isinstance(raw, dict) else content.count("\n") + 1
+            truncated = total > max_lines_each
+            sha = _file_sha(content)
+
+            cached = cache.get(rel_path)
+            if cached and cached.get("sha") == sha:
+                cached_count += 1
+                result[rel_path] = {
+                    "cached": True,
+                    "ref_id": cached.get("ref_id", ""),
+                    "turn": cached.get("turn", ""),
+                    "sha": sha,
+                    "note": (
+                        f"Already read (sha unchanged) → REF:{cached.get('ref_id','')}. "
+                        "Call retrieve_stored_content if you need the full content."
+                    ),
+                }
+            else:
+                ref_id = f"bulk_read__{rel_path.replace('/', '_').replace(chr(92), '_').replace('.', '_')}__new"
+                if run_folder:
+                    _update_read_cache(run_folder, rel_path, ref_id, "current", sha)
+                result[rel_path] = {
+                    "content": content,
+                    "total_lines": total,
+                    "truncated": truncated,
+                    "sha": sha,
+                }
+        except Exception as exc:
+            result[rel_path] = {"error": str(exc)}
+
+    if cached_count:
+        result["_cache_note"] = f"{cached_count}/{len(paths)} file(s) unchanged since last read — returned cache hints only."
+
+    return json.dumps(result, indent=2)
+
+
+@tool
+def read_many_run_folder_files(
+    run_folder: str,
+    relative_paths: list,
+    max_chars_each: int = 6000,
+) -> str:
+    """
+    Reads multiple run-folder files in a single call.
+    Use instead of repeated read_run_folder_file calls whenever you need 2+ artifacts
+    (e.g., api_test_data.json + generated_tests.json + api_schemas.json together).
+
+    relative_paths: list of paths relative to run_folder.
+    max_chars_each: character limit per file (default 6000).
+
+    Returns: JSON object keyed by relative path.
+    """
+    logger.info("Tool Call: read_many_run_folder_files — %d paths", len(relative_paths or []))
+    if not relative_paths:
+        return json.dumps({"error": "relative_paths list is empty"})
+
+    base = Path(run_folder).resolve()
+    result: dict = {}
+
+    for rel in relative_paths[:_MAX_BULK_FILES]:
+        try:
+            target = (base / rel).resolve()
+            if not str(target).startswith(str(base)):
+                result[rel] = {"error": "path traversal not allowed"}
+                continue
+            if not target.exists():
+                result[rel] = {"error": f"not found in run_folder"}
+                continue
+            if not target.is_file():
+                result[rel] = {"error": "not a file"}
+                continue
+            text = target.read_text(encoding="utf-8", errors="replace")
+            truncated = len(text) > max_chars_each
+            if truncated:
+                text = text[:max_chars_each] + f"\n\n[... truncated at {max_chars_each} chars ...]"
+            result[rel] = {"content": text, "truncated": truncated}
+        except Exception as exc:
+            result[rel] = {"error": str(exc)}
+
+    return json.dumps(result, indent=2)
+
+
+@tool
+def glob_and_read(
+    target_dir: str,
+    glob: str,
+    run_folder: str = "",
+    max_files: int = 20,
+    max_lines_each: int = 150,
+) -> str:
+    """
+    Finds all files matching a glob pattern inside target_dir and reads them all at once.
+    This is the single most efficient way to collect a category of files (e.g., all urls.py,
+    all serializers.py, all models.py) in one LLM round-trip.
+
+    Examples:
+      glob_and_read(target_dir, "**/urls.py")       — all URL configs
+      glob_and_read(target_dir, "**/serializers.py") — all serializers
+      glob_and_read(target_dir, "**/models.py")      — all models
+      glob_and_read(target_dir, "**/views.py")       — all view files
+
+    Returns: JSON with two keys:
+      "files_found": list of matched relative paths
+      "contents": {path: {content, total_lines, truncated, sha}} map
+    Also writes a parsed endpoint_map.json to run_folder when glob is "**/urls.py".
+    """
+    logger.info("Tool Call: glob_and_read — glob='%s' in %s", glob, target_dir)
+    try:
+        reader = ProjectFileReader(target_dir)
+        matched = reader.list_files(glob=glob, limit=max_files)
+        if not matched:
+            return json.dumps({"files_found": [], "contents": {}, "note": f"No files matched '{glob}'"})
+
+        cache = _get_read_cache(run_folder) if run_folder else {}
+        contents: dict = {}
+
+        for rel_path in matched[:max_files]:
+            try:
+                raw = reader.read_file(rel_path, start_line=1, max_lines=max_lines_each)
+                content = raw.get("content", "") if isinstance(raw, dict) else str(raw)
+                total = raw.get("total_lines", content.count("\n") + 1) if isinstance(raw, dict) else content.count("\n") + 1
+                truncated = total > max_lines_each
+                sha = _file_sha(content)
+
+                cached = cache.get(rel_path)
+                if cached and cached.get("sha") == sha:
+                    contents[rel_path] = {
+                        "cached": True,
+                        "ref_id": cached.get("ref_id", ""),
+                        "sha": sha,
+                        "note": f"Unchanged since last read → REF:{cached.get('ref_id','')}",
+                    }
+                else:
+                    slug = rel_path.replace("/", "_").replace("\\", "_").replace(".", "_")
+                    ref_id = f"glob_read__{slug}"
+                    if run_folder:
+                        _update_read_cache(run_folder, rel_path, ref_id, "current", sha)
+                    contents[rel_path] = {
+                        "content": content,
+                        "total_lines": total,
+                        "truncated": truncated,
+                        "sha": sha,
+                    }
+            except Exception as exc:
+                contents[rel_path] = {"error": str(exc)}
+
+        # Auto-parse endpoint_map when reading urls.py files
+        if "urls.py" in glob.lower() and run_folder:
+            _extract_and_save_endpoint_map(contents, run_folder)
+
+        return json.dumps({"files_found": matched, "contents": contents}, indent=2)
+    except Exception as e:
+        return f"Error in glob_and_read: {e}"
+
+
+def _extract_and_save_endpoint_map(contents: dict, run_folder: str) -> None:
+    """Parse url patterns from urls.py content blobs and save endpoint_map.json."""
+    import re as _re
+    endpoints: list = []
+    for file_path, data in contents.items():
+        if isinstance(data, dict) and "content" in data:
+            text = data["content"]
+            for m in _re.finditer(
+                r"path\(\s*['\"]([^'\"]+)['\"].*?(?:name=['\"]([^'\"]+)['\"])?",
+                text
+            ):
+                endpoints.append({
+                    "path": m.group(1),
+                    "name": m.group(2) or "",
+                    "file": file_path,
+                })
+    if not endpoints:
+        return
+    try:
+        ep_path = Path(run_folder) / "endpoint_map.json"
+        existing: list = []
+        if ep_path.exists():
+            try:
+                existing = json.loads(ep_path.read_text(encoding="utf-8"))
+            except Exception:
+                existing = []
+        known = {e["path"] for e in existing}
+        new_entries = [e for e in endpoints if e["path"] not in known]
+        if new_entries:
+            existing.extend(new_entries)
+            ep_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+@tool
+def write_run_folder_file(run_folder: str, relative_path: str, content: str) -> str:
+    """
+    Writes (or overwrites) a file inside the per-run output directory.
+    Use this to update api_test_data.json with correct endpoints, save notes,
+    or correct any run-folder artifact that the agent has discovered is wrong.
+
+    Allowed paths (sandboxed to prevent unintended writes):
+      - api_test_data.json
+      - endpoint_map.json
+      - notes/<any>.md
+      - testcases/<any>.py
+
+    relative_path: path relative to run_folder.
+    content: full file content to write (UTF-8).
+    """
+    logger.info("Tool Call: write_run_folder_file — %s / %s", run_folder, relative_path)
+    _ALLOWLIST_PREFIXES = ("api_test_data.json", "endpoint_map.json", "notes/", "testcases/")
+    _ALLOWLIST_EXACT = {"api_test_data.json", "endpoint_map.json"}
+
+    norm = relative_path.replace("\\", "/").lstrip("/")
+    allowed = norm in _ALLOWLIST_EXACT or any(norm.startswith(p) for p in ("notes/", "testcases/"))
+    if not allowed:
+        return (
+            f"Error: '{relative_path}' is not in the write allowlist. "
+            f"Allowed: api_test_data.json, endpoint_map.json, notes/*.md, testcases/*.py"
+        )
+
+    try:
+        base = Path(run_folder).resolve()
+        target = (base / norm).resolve()
+        if not str(target).startswith(str(base)):
+            return "Error: Path traversal outside run_folder is not allowed."
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+        return f"Written {len(content)} chars to {target}."
+    except Exception as e:
+        return f"Error writing file: {e}"
 
 
 def resolve_credential_at_startup(store) -> "dict | None":
@@ -996,6 +1628,26 @@ def resolve_credential_at_startup(store) -> "dict | None":
     Returns the auth header dict (e.g. {"Authorization": "Bearer eyJ..."})
     or None if resolution fails.
     """
+    # 0. Vault Dynamic Auth Flows
+    try:
+        from vault.models import AuthFlow
+        from vault.services import Authenticator
+        flow = AuthFlow.objects.filter(name__iexact="default").first()
+        if flow:
+            base_url = store.target_url().rstrip("/") if store else os.environ.get("FAULTLINE_TARGET_URL", "")
+            if base_url:
+                authenticator = Authenticator(base_url, flow)
+                vault_res = authenticator.execute_flow()
+                if vault_res["headers"] or vault_res["cookies"]:
+                    header = {**vault_res["headers"]}
+                    if vault_res["cookies"]:
+                        c_str = "; ".join(f"{k}={v}" for k, v in vault_res["cookies"].items())
+                        header["Cookie"] = c_str
+                    logger.info("Startup auth: resolved via Vault flow 'default'")
+                    return header
+    except Exception as vault_err:
+        logger.debug("Vault startup auth skipped: %s", vault_err)
+
     if not store or not store.loaded:
         return None
     cred = store.get("default")
@@ -1048,11 +1700,95 @@ def resolve_credential_at_startup(store) -> "dict | None":
     return None
 
 
+@tool
+def fetch_endpoint_bundle(target_dir: str, run_folder: str = "") -> str:
+    """
+    Single-call endpoint discovery: reads ALL urls.py files, ALL serializers.py files,
+    and the top-level project urls.py in one shot.
+
+    Returns a JSON bundle with:
+      - "endpoint_map": parsed list of {path, name, file} route entries
+      - "urls_contents": {relative_path: content} for every urls.py found
+      - "serializers_summary": {relative_path: first 60 lines} for every serializers.py
+      - "files_indexed": total count of files read
+      - "endpoint_map_saved": true if endpoint_map.json was written to run_folder
+
+    Use this ONCE at the start of Discovery instead of calling glob_and_read or
+    read_project_file repeatedly for URL and serializer files.
+    """
+    logger.info("Tool Call: fetch_endpoint_bundle for %s", target_dir)
+    try:
+        reader = ProjectFileReader(target_dir)
+        bundle: dict = {"endpoint_map": [], "urls_contents": {}, "serializers_summary": {}, "files_indexed": 0}
+        cache = _get_read_cache(run_folder) if run_folder else {}
+
+        # ── Read all urls.py files ────────────────────────────────────────
+        url_files = reader.list_files(glob="**/urls.py", limit=40)
+        urls_contents: dict = {}
+        for rel in url_files:
+            try:
+                sha_key = rel
+                raw = reader.read_file(rel, start_line=1, max_lines=120)
+                content = raw.get("content", "") if isinstance(raw, dict) else str(raw)
+                sha = _file_sha(content)
+                cached = cache.get(sha_key)
+                if cached and cached.get("sha") == sha:
+                    urls_contents[rel] = {"cached": True, "ref_id": cached["ref_id"], "sha": sha}
+                else:
+                    ref_id = f"urls__{rel.replace('/', '_').replace(chr(92), '_').replace('.', '_')}"
+                    if run_folder:
+                        _update_read_cache(run_folder, sha_key, ref_id, "bundle", sha)
+                    urls_contents[rel] = {"content": content, "sha": sha}
+                    bundle["files_indexed"] += 1
+            except Exception as exc:
+                urls_contents[rel] = {"error": str(exc)}
+
+        # ── Parse endpoint map ────────────────────────────────────────────
+        _extract_and_save_endpoint_map(urls_contents, run_folder)
+        if run_folder:
+            try:
+                ep_path = Path(run_folder) / "endpoint_map.json"
+                if ep_path.exists():
+                    bundle["endpoint_map"] = json.loads(ep_path.read_text(encoding="utf-8"))
+                    bundle["endpoint_map_saved"] = True
+            except Exception:
+                pass
+
+        bundle["urls_contents"] = urls_contents
+
+        # ── Read serializers.py summaries (first 60 lines each) ──────────
+        ser_files = reader.list_files(glob="**/serializers.py", limit=20)
+        for rel in ser_files:
+            try:
+                raw = reader.read_file(rel, start_line=1, max_lines=60)
+                content = raw.get("content", "") if isinstance(raw, dict) else str(raw)
+                bundle["serializers_summary"][rel] = content
+                bundle["files_indexed"] += 1
+            except Exception as exc:
+                bundle["serializers_summary"][rel] = f"Error: {exc}"
+
+        n_routes = len(bundle["endpoint_map"])
+        n_ser = len(bundle["serializers_summary"])
+        bundle["_summary"] = (
+            f"Discovered {n_routes} route(s) across {len(url_files)} urls.py file(s) "
+            f"and {n_ser} serializer file(s). "
+            f"endpoint_map.json {'saved to run_folder' if bundle.get('endpoint_map_saved') else 'not saved (no run_folder)'}."
+        )
+        return json.dumps(bundle, indent=2)
+    except Exception as e:
+        return f"Error in fetch_endpoint_bundle: {e}"
+
+
 # Expose tools for the agent to bind
 FAULTLINE_TOOLS = [
     record_finding,
     list_project_files,
     read_project_file,
+    read_many_project_files,
+    read_many_run_folder_files,
+    glob_and_read,
+    fetch_endpoint_bundle,
+    write_run_folder_file,
     run_deterministic_checks,
     analyze_project_structure,
     index_project_documentation,
@@ -1075,4 +1811,5 @@ FAULTLINE_TOOLS = [
     summarize_to_report,
     list_run_folder_files,
     read_run_folder_file,
+    record_decision,
 ]
