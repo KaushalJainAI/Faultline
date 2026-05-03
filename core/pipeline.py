@@ -35,7 +35,7 @@ def _severity_gauge(score: int, max_score: int = 100) -> str:
     """ASCII progress bar, e.g. `████████░░  84/100`."""
     pct = max(0, min(score, max_score))
     filled = round(pct / 10)
-    bar = "█" * filled + "░" * (10 - filled)
+    bar = "#" * filled + "." * (10 - filled)
     return f"`{bar}  {pct}/{max_score}`"
 
 
@@ -140,7 +140,7 @@ class PipelineRunner:
             if renderer:
                 renderer.show_pipeline_step(
                     "API Schema Export", "done",
-                    detail=f"{len(schemas)} serializer(s) → api_schemas.json",
+                    detail=f"{len(schemas)} serializer(s) -> api_schemas.json",
                 )
 
         semantic = {"status": "skipped"}
@@ -178,6 +178,10 @@ class PipelineRunner:
                     "inheritance_edges": len(structure.get("inheritance_edges", [])),
                     "graph_viewer_py": graph_html_path,
                 },
+                "modularity": {
+                    "overall_score": deterministic.get("summary", {}).get("modularity_score", 100),
+                    "report": deterministic.get("modularity_report", {}),
+                },
                 "semantic_indexing": semantic,
                 "agentic_api_tests": {"status": "available_in_agent_or_hybrid_mode"},
                 "production_readiness": {"status": "planned"},
@@ -185,6 +189,7 @@ class PipelineRunner:
             },
         }
         report["report_path"] = self.write_report(report)
+        self.write_modularity_map(report["stages"]["modularity"]["report"])
         return report
 
     # ------------------------------------------------------------------
@@ -224,6 +229,7 @@ class PipelineRunner:
             f"| High / Critical | {high_crit} |",
             f"| Files mapped | {report['stages']['dependency_graph']['files']} |",
             f"| Dependencies mapped | {report['stages']['dependency_graph']['dependencies']} |",
+            f"| Modularity Score | {report['stages']['modularity']['overall_score']}/100 |",
             f"| Semantic indexing | {report['stages']['semantic_indexing']['status']} |",
             f"| Production-readiness score | {score}/100 |",
             "",
@@ -308,6 +314,27 @@ class PipelineRunner:
                             lines.append(f"  - … {count - _MAX_LOCS} more — see `findings.jsonl` for full list")
                     lines.append("")
 
+        # --- Modularity Audit ---
+        mod = report["stages"]["modularity"]["report"]
+        lines += ["## Modularity Audit", ""]
+        if mod:
+            lines += [
+                "Assessment of project containers and their independence:",
+                "",
+                "| Container | Status | Independence | Cohesion | Public API |",
+                "| --- | --- | --- | --- | --- |",
+            ]
+            for cid, data in mod.get("containers", {}).items():
+                m = data["metrics"]
+                lines.append(f"| `{cid}` | {data['status']} | {m['independence_score']}% | {m['cohesion_density']} | {m['public_api_size']} |")
+            lines += [
+                "",
+                "**View Detailed Map:** [modularity_map.md](modularity_map.md)",
+                "",
+            ]
+        else:
+            lines += ["Modularity assessment data not available.", ""]
+
         # --- AST dependency root causes ---
         lines += ["## AST Dependency Root Causes", ""]
         if roots:
@@ -339,3 +366,42 @@ class PipelineRunner:
 
         path.write_text("\n".join(lines), encoding="utf-8")
         return str(path)
+
+    def write_modularity_map(self, mod_report: Dict):
+        """Writes a detailed modularity breakdown with a Mermaid architecture map."""
+        if not mod_report:
+            return
+        
+        path = self.run_folder / "modularity_map.md"
+        lines = [
+            "# Modularity Architecture Map",
+            "",
+            "This document visualizes the project as a set of independent containers and assesses their modular health.",
+            "",
+            "## System Architecture",
+            "",
+            "```mermaid",
+            mod_report.get("mermaid", ""),
+            "```",
+            "",
+            "## Container Deep Dive",
+            "",
+        ]
+
+        for cid, data in mod_report.get("containers", {}).items():
+            lines += [
+                f"### Container: `{cid}`",
+                f"- **Status:** {data['status']}",
+                f"- **Files:** {len(data['files'])}",
+                f"- **Public API Surface:** `{', '.join(data.get('public_surface', [])) or 'None'}`",
+                "",
+                "#### Metrics",
+                f"- **Independence:** {data['metrics']['independence_score']}% (High = Better)",
+                f"- **Instability:** {data['metrics']['instability']} (0 = Stable, 1 = Unstable)",
+                f"- **Cohesion Density:** {data['metrics']['cohesion_density']} (Links per file)",
+                "",
+                "---",
+                ""
+            ]
+
+        path.write_text("\n".join(lines), encoding="utf-8")

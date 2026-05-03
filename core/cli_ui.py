@@ -38,32 +38,32 @@ SEVERITY_STYLES = {
 }
 
 STEP_GLYPHS = {
-    "running": "[bold cyan]○[/bold cyan]",
-    "done": "[bold green]✓[/bold green]",
-    "error": "[bold red]✗[/bold red]",
-    "skipped": "[dim]–[/dim]",
+    "running": "[bold cyan]>[/bold cyan]",
+    "done": "[bold green]+[/bold green]",
+    "error": "[bold red]![/bold red]",
+    "skipped": "[dim]-[/dim]",
 }
 
 # Tool category icons for visual grouping
 TOOL_ICONS = {
-    "list_project_files": "📂",
-    "read_project_file": "📄",
-    "analyze_project_structure": "🗺️",
-    "run_deterministic_checks": "🔍",
-    "index_project_documentation": "📚",
-    "query_knowledge_base": "🔎",
-    "validate_python_code": "✅",
-    "run_functional_test": "🧪",
-    "execute_chaos_campaign": "💥",
-    "propose_code_patch": "🩹",
-    "record_finding": "🚨",
-    "request_user_input": "👤",
-    "retrieve_stored_content": "📦",
-    "copy_test_boilerplate": "📋",
-    "discover_api_schema": "🌐",
-    "summarize_to_report": "📝",
-    "list_run_folder_files": "📁",
-    "read_run_folder_file": "📃",
+    "list_project_files": "DIR",
+    "read_project_file": "FILE",
+    "analyze_project_structure": "MAP",
+    "run_deterministic_checks": "SCAN",
+    "index_project_documentation": "DOCS",
+    "query_knowledge_base": "FIND",
+    "validate_python_code": "OK",
+    "run_functional_test": "TEST",
+    "execute_chaos_campaign": "CHAOS",
+    "propose_code_patch": "PATCH",
+    "record_finding": "ERROR",
+    "request_user_input": "USER",
+    "retrieve_stored_content": "BOX",
+    "copy_test_boilerplate": "COPY",
+    "discover_api_schema": "API",
+    "summarize_to_report": "REPORT",
+    "list_run_folder_files": "DIR",
+    "read_run_folder_file": "FILE",
 }
 
 
@@ -261,7 +261,7 @@ class CLIRenderer:
     def show_checkpoint_saved(self, path: str, turn: int = 0) -> None:
         """Confirmation when checkpoint is written."""
         self.console.print(
-            f"  [green]✓[/green] Checkpoint saved (turn {turn}): [bold]{path}[/bold]"
+            f"  [green]+[/green] Checkpoint saved (turn {turn}): [bold]{path}[/bold]"
         )
 
     def show_resumed(self, turn: int, run_folder: str) -> None:
@@ -277,8 +277,8 @@ class CLIRenderer:
     def show_model_switch(self, old_model: str, new_model: str) -> None:
         """Shown when the LLM model is switched mid-campaign."""
         self.console.print(
-            f"  [green]✓[/green] Model switched: "
-            f"[dim]{old_model}[/dim] → [bold cyan]{new_model}[/bold cyan]"
+            f"  [green]+[/green] Model switched: "
+            f"[dim]{old_model}[/dim] -> [bold cyan]{new_model}[/bold cyan]"
         )
 
     # ------------------------------------------------------------------
@@ -519,7 +519,7 @@ class CLIRenderer:
         if hasattr(self, "_status") and self._status:
             self._status.stop()
         marker = "[bold green]finished[/bold green]" if done else "[dim]continuing…[/dim]"
-        self.console.print(f"  [green]✓[/green] Turn {turn} complete — {marker}")
+        self.console.print(f"  [green]+[/green] Turn {turn} complete - {marker}")
 
     def show_cli_turn_error(self, turn: int, error: str) -> None:
         if hasattr(self, "_status") and self._status:
@@ -531,7 +531,7 @@ class CLIRenderer:
 
     def show_cli_section(self, heading: str) -> None:
         """Surface a section heading extracted from the agent's response."""
-        self.console.print(f"  [bold magenta]»[/bold magenta] [dim]{heading}[/dim]")
+        self.console.print(f"  [bold magenta]>>[/bold magenta] [dim]{heading}[/dim]")
 
     def show_cli_mode_warning(self, cli_name: str) -> None:
         max_turns = __import__("os").environ.get("FAULTLINE_CLI_MAX_TURNS", "12")

@@ -238,6 +238,17 @@ RULE 7 — TEST CODE CONTRACT (every test MUST log structured results):
   This line is parsed by the harness to build api_results_log.jsonl — the universal
   record of every API call made during the campaign. Without it, results are invisible.
   ALL hits (200, 400, 404, 500) must be logged — not just failures.
+
+═══════════════════════════════════════════════════════════════════════════════
+TIME MANAGEMENT — NO OVERTHINKING
+═══════════════════════════════════════════════════════════════════════════════
+
+The operator is waiting in real-time. Long reasoning chains cause network timeouts and disrupt the campaign flow.
+
+1. **Be Decisive**: If a solution isn't obvious after 7-8 sentences of reasoning, pick the most likely path or use a tool to verify your assumption.
+2. **Limit Reasoning**: Do not write essays before tool calls. Stay within 2-4 sentences of reasoning per turn.
+3. **10-Minute Hard Cap**: You MUST complete your entire turn (reasoning + tool calls) within 10 minutes. If you are approaching this limit, emit a partial result or [DONE] immediately.
+4. **Avoid Redundancy**: Do not restate what the tools already told you. Focus on the DELTA (what is new and what is next).
 """
 
 

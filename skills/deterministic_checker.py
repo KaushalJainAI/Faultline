@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from skills.ast_grapher import ASTGrapher, SKIPPED_DIRS
+from skills.deprecation_guard import DeprecationGuard
+from skills.container_grapher import ContainerGrapher
 
 
 @dataclass
@@ -40,10 +42,22 @@ class DeterministicChecker:
         findings.extend(self.run_ruff())
         findings.extend(self.run_pip_check())
         findings.extend(self.run_pytest_collect())
+        
+        # Level 2 Deprecation Guard (Runtime)
+        dep_guard = DeprecationGuard(self.target_dir, self.target_python, self.timeout)
+        runtime_deps = dep_guard.check_runtime_deprecations()
+        for d in runtime_deps:
+            findings.append(CheckFinding(**d))
 
-        # Build the AST graph once; reuse for both call-sig checks and dep analysis
+        # Build the AST graph once; reuse for both call-sig checks and modularity
         graph = ASTGrapher(self.target_dir).analyze_project()
         findings.extend(self.check_call_signatures(graph))
+        
+        # Modularity Assessment
+        mod_assessor = ContainerGrapher(self.target_dir)
+        mod_report = mod_assessor.analyze_modularity(graph)
+        findings.extend(self.check_modularity_violations(mod_report))
+        
         root_causes = self.analyze_dependency_failures(graph, findings)
 
         return {
@@ -51,9 +65,11 @@ class DeterministicChecker:
                 "target_dir": str(self.target_dir),
                 "total_findings": len(findings),
                 "high_or_critical": sum(1 for f in findings if f.severity in {"high", "critical"}),
+                "modularity_score": self._calculate_overall_modularity(mod_report),
             },
             "findings": [asdict(f) for f in findings],
             "dependency_root_causes": root_causes,
+            "modularity_report": mod_report,
             "serializer_schemas": graph.get("serializer_schemas", []),
         }
 
@@ -190,7 +206,7 @@ class DeterministicChecker:
                 summary="Ruff is not installed, so deterministic lint checks were skipped.",
                 suggested_fix="Install ruff in the target environment.",
             )]
-        result = self._run([ruff, "check", ".", "--output-format=json"])
+        result = self._run([ruff, "check", ".", "--extend-select=UP", "--output-format=json"])
         if result.returncode == 0:
             return []
         try:
@@ -396,3 +412,59 @@ class DeterministicChecker:
             summary=f"Command failed: {' '.join(result.args)}",
             evidence=(result.stdout or "") + (result.stderr or ""),
         )
+    def check_modularity_violations(self, mod_report: Dict) -> List[CheckFinding]:
+        """Detects circular dependencies between containers and 'Wrong' status modules."""
+        findings = []
+        edges = mod_report.get("edges", [])
+        adj = {}
+        for edge in edges:
+            adj.setdefault(edge["source"], set()).add(edge["target"])
+
+        # Simple DFS for circularity
+        def find_cycle(node, visited, stack, path):
+            visited.add(node)
+            stack.add(node)
+            path.append(node)
+            for neighbor in adj.get(node, []):
+                if neighbor not in visited:
+                    res = find_cycle(neighbor, visited, stack, path)
+                    if res: return res
+                elif neighbor in stack:
+                    idx = path.index(neighbor)
+                    return path[idx:] + [neighbor]
+            stack.remove(node)
+            path.pop()
+            return None
+
+        visited = set()
+        for container in mod_report.get("containers", {}):
+            if container not in visited:
+                cycle = find_cycle(container, visited, set(), [])
+                if cycle:
+                    cycle_str = " -> ".join(cycle)
+                    findings.append(CheckFinding(
+                        title="Circular Container Dependency",
+                        category="semantic",
+                        severity="medium",
+                        summary=f"A circular dependency exists between containers: {cycle_str}",
+                        evidence=f"Path: {cycle_str}",
+                        suggested_fix="Refactor the interfaces to ensure a one-way flow of control between modules."
+                    ))
+
+        # Flag 'Wrong' status modules
+        for cid, data in mod_report.get("containers", {}).items():
+            if "Wrong" in data.get("status", ""):
+                findings.append(CheckFinding(
+                    title=f"Poor Modularity: {cid}",
+                    category="semantic",
+                    severity="low",
+                    summary=f"Container '{cid}' is heavily entangled with other modules.",
+                    evidence=f"Independence Score: {data['metrics'].get('independence_score', 0)}%",
+                    suggested_fix="Reduce external dependencies and ensure the module has a clear, single responsibility."
+                ))
+        return findings
+
+    def _calculate_overall_modularity(self, mod_report: Dict) -> int:
+        scores = [data["metrics"]["independence_score"] for data in mod_report.get("containers", {}).values()]
+        if not scores: return 100
+        return int(sum(scores) / len(scores))

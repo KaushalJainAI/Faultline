@@ -9,6 +9,7 @@ import os
 import asyncio
 import re
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TypedDict, Annotated, Optional
@@ -45,6 +46,49 @@ from core.progress_tracker import ProgressTracker
 logger = logging.getLogger("AegisAgent")
 
 CALL_TIMEOUT_S: int = int(os.environ.get("FAULTLINE_CALL_TIMEOUT", "300"))
+MAX_RPM: int = int(os.environ.get("FAULTLINE_MAX_RPM", "36"))
+
+
+class LLMRateLimiter:
+    """
+    Thread-safe, async rate limiter using a sliding window (queue of timestamps).
+    Enforces a strict Requests Per Minute (RPM) limit.
+    """
+    def __init__(self, rpm: int):
+        self.rpm = rpm
+        self.window_size = 60.0  # seconds
+        self.calls = deque()
+        self.lock = asyncio.Lock()
+
+    async def wait(self):
+        """Blocks until a call can be made without exceeding the RPM limit."""
+        if self.rpm <= 0:
+            return
+
+        async with self.lock:
+            now = time.monotonic()
+            
+            # Remove timestamps outside the 60s window
+            while self.calls and now - self.calls[0] > self.window_size:
+                self.calls.popleft()
+
+            if len(self.calls) >= self.rpm:
+                # Calculate sleep time based on the oldest call in the current window
+                sleep_time = self.window_size - (now - self.calls[0])
+                if sleep_time > 0:
+                    logger.info(f"Rate limit reached ({self.rpm} RPM). Sleeping for {sleep_time:.2f}s...")
+                    await asyncio.sleep(sleep_time)
+                
+                # After sleeping, re-clean the window
+                now = time.monotonic()
+                while self.calls and now - self.calls[0] > self.window_size:
+                    self.calls.popleft()
+
+            self.calls.append(time.monotonic())
+
+
+# Global rate limiter instance
+_rate_limiter = LLMRateLimiter(MAX_RPM)
 
 
 def _recent_step_coverage(run_folder: str) -> str:
@@ -94,10 +138,12 @@ def _log_llm_call(run_folder: str, content: str, timed_out: bool, elapsed: float
 async def _stream_with_timeout(model, messages, timeout: int, run_folder: str):
     """
     Stream model tokens into RAM and return a merged AIMessage.
-    Writes to llm_calls.log on completion or timeout.
-    On timeout, raises asyncio.TimeoutError so the caller can handle recovery.
+    Enforces global RPM limit before starting the call.
     """
     from langchain_core.messages.ai import AIMessageChunk
+
+    # Enforce rate limit
+    await _rate_limiter.wait()
 
     chunks: list[AIMessageChunk] = []
     start = time.monotonic()
@@ -163,23 +209,24 @@ REASONING_PROFILES = {
     "fast": {
         "max_output_tokens": 1024,
         "instruction": (
-            "SPEED MODE: You have a tight token budget. Be extremely concise — "
-            "one sentence of reasoning max per step. Skip sub-tasks you can infer. "
-            "Prioritize the 2 most impactful actions and stop."
+            "SPEED MODE: Be extremely concise. One sentence of reasoning max. "
+            "Do NOT overthink. You MUST finish your response in under 10 minutes."
         ),
     },
     "normal": {
         "max_output_tokens": 4096,
         "instruction": (
             "NORMAL MODE: Balance thoroughness with efficiency. "
-            "Keep reasoning to 2–3 sentences per step."
+            "Reasoning should be 2–3 sentences. Avoid long-winded analysis. "
+            "You MUST finish your response in under 10 minutes."
         ),
     },
     "deep": {
         "max_output_tokens": 8192,
         "instruction": (
-            "DEEP MODE: Think carefully before each step. "
-            "Show your full reasoning chain and cover edge cases."
+            "DEEP MODE: Show your reasoning chain, but stay focused. "
+            "Do NOT overthink or repeat yourself. The operator is waiting. "
+            "You MUST finish your response in under 10 minutes."
         ),
     },
 }
@@ -190,8 +237,9 @@ class BudgetConfig:
     """Runtime spending limits for a single campaign run."""
     max_llm_calls: int = int(os.environ.get("FAULTLINE_MAX_LLM_CALLS") or os.environ.get("FAULTLINE_MAX_TURNS") or "120")
     max_tool_calls: int = int(os.environ.get("FAULTLINE_MAX_TOOL_CALLS", "400"))
-    max_input_tokens: int = int(os.environ.get("FAULTLINE_MAX_TOKENS", "500000"))
+    max_input_tokens: int = int(os.environ.get("FAULTLINE_MAX_INPUT_TOKENS") or os.environ.get("FAULTLINE_MAX_TOKENS") or "500000")
     max_output_tokens: int = int(os.environ.get("FAULTLINE_MAX_OUTPUT_TOKENS", "4096"))
+    max_rpm: int = int(os.environ.get("FAULTLINE_MAX_RPM", "36"))
     reasoning_level: str = os.environ.get("FAULTLINE_REASONING_LEVEL", "normal")
 
     def __post_init__(self):
@@ -212,8 +260,9 @@ class BudgetConfig:
             "\n═══════════════════════════════════════════════════════════════════════════════\n"
             "REAL-WORLD BUDGET CONSTRAINTS  ← read this before every action\n"
             "═══════════════════════════════════════════════════════════════════════════════\n\n"
-            f"You are operating under a HARD budget. Every LLM call and tool call costs real money and time.\n\n"
+            f"You are operating under a HARD budget and strict time limit.\n\n"
             f"  Reasoning level : {self.reasoning_level.upper()}\n"
+            f"  Time Limit      : 10 MINUTES (600s) MAX per turn\n"
             f"  LLM calls used  : {llm_used} / {self.max_llm_calls}  "
             f"({'STOP NOW — over budget!' if llm_used >= self.max_llm_calls else f'{self.max_llm_calls - llm_used} remaining'})\n"
             f"  Tool calls used : {tool_used} / {self.max_tool_calls}  "
@@ -222,10 +271,10 @@ class BudgetConfig:
             f"  Max context     : {self.max_input_tokens:,} tokens\n\n"
             f"{self.reasoning_instruction}\n\n"
             "RULES:\n"
-            "- Do NOT repeat work already done.\n"
-            "- Do NOT call a tool just to confirm something you already know.\n"
-            "- If you are close to the LLM or tool call limit, finish the most critical task and write a short summary.\n"
-            "- When you hit [DONE] or the budget runs out, stop immediately.\n"
+            "- DO NOT OVERTHINK. Be decisive.\n"
+            "- If you cannot find a solution in 1-2 steps, summarize and ask the operator.\n"
+            "- Avoid deeply nested reasoning chains that cause high latency.\n"
+            "- When you hit [DONE] or the budget/time runs out, stop immediately.\n"
             "═══════════════════════════════════════════════════════════════════════════════\n"
         )
 
@@ -698,7 +747,7 @@ class AegisAgent:
             # Prune to only reporting and essential read tools
             active_tools = [
                 t for t in FAULTLINE_TOOLS
-                if t.__name__ in (
+                if (getattr(t, "name", None) or getattr(t, "__name__", "")) in (
                     "record_finding", "save_vulnerability_report",
                     "summarize_to_report", "list_run_folder_files",
                     "read_run_folder_file", "record_decision"

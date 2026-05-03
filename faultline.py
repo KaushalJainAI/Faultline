@@ -116,6 +116,8 @@ def parse_args() -> argparse.Namespace:
                         help="Max context window tokens per LLM call (default: 200000)")
     parser.add_argument("--max-output-tokens", type=int, default=None,
                         help="Max output tokens per LLM call (overrides reasoning-level default)")
+    parser.add_argument("--max-rpm", type=int, default=None,
+                        help="Max requests per minute for LLM calls (default: 36)")
     args = parser.parse_args()
 
     # If resuming, skip interactive prompts — all state comes from the checkpoint
@@ -442,13 +444,16 @@ async def main_async() -> int:
     if args.max_tool_calls is not None:
         os.environ["FAULTLINE_MAX_TOOL_CALLS"] = str(args.max_tool_calls)
     if args.max_input_tokens is not None:
-        os.environ["FAULTLINE_MAX_TOKENS"] = str(args.max_input_tokens)
+        os.environ["FAULTLINE_MAX_INPUT_TOKENS"] = str(args.max_input_tokens)
     if args.max_output_tokens is not None:
         os.environ["FAULTLINE_MAX_OUTPUT_TOKENS"] = str(args.max_output_tokens)
+    if args.max_rpm is not None:
+        os.environ["FAULTLINE_MAX_RPM"] = str(args.max_rpm)
     budget = BudgetConfig()
     budget_str = (
         f"{budget.max_llm_calls} turns \u00b7 "
         f"{budget.max_input_tokens:,} tokens \u00b7 "
+        f"rpm={budget.max_rpm} \u00b7 "
         f"reasoning={budget.reasoning_level}"
     )
 
