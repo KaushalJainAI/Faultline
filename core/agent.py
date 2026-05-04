@@ -12,12 +12,12 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TypedDict, Annotated, Optional
+from typing import TypedDict, Annotated, Optional, List
 
 from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
-from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, BaseMessage
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, BaseMessage, ToolMessage
 from core.content_manager import build_tiered_context
 
 try:
@@ -42,11 +42,68 @@ from core.provider_config import get_cli_provider_name, get_provider
 from core.checkpoint import save_checkpoint, load_checkpoint
 from core.model_registry import get_active_model, set_active_model, find_model
 from core.progress_tracker import ProgressTracker
+from langchain_core.runnables import RunnableConfig
 
 logger = logging.getLogger("AegisAgent")
 
-CALL_TIMEOUT_S: int = int(os.environ.get("FAULTLINE_CALL_TIMEOUT", "300"))
+
+class ParallelToolNode(ToolNode):
+    """
+    A ToolNode that executes multiple tool calls concurrently using asyncio.gather.
+    Significantly speeds up multi-file reads and parallel security probing.
+    """
+    async def invoke(self, state: "CampaignState", config: RunnableConfig = None) -> "CampaignState":
+        # Get tool calls from the last message
+        last_message = state["messages"][-1]
+        if not hasattr(last_message, "tool_calls") or not last_message.tool_calls:
+            return {"messages": []}
+
+        # Build list of coroutines
+        coros = []
+        for tool_call in last_message.tool_calls:
+            coros.append(self.ainvoke_tool(tool_call, config))
+
+        # Run all in parallel
+        try:
+            results = await asyncio.gather(*coros)
+        except Exception as e:
+            logger.error("Parallel execution failed: %s", e)
+            # Fallback to sequential if gather totally bombs (unlikely but safe)
+            results = []
+            for tool_call in last_message.tool_calls:
+                results.append(await self.ainvoke_tool(tool_call, config))
+        
+        return {"messages": results}
+
+    async def ainvoke_tool(self, tool_call, config):
+        try:
+            tool = self.tools_by_name.get(tool_call["name"])
+            if not tool:
+                return ToolMessage(
+                    content=f"Error: Tool '{tool_call['name']}' not found.",
+                    tool_call_id=tool_call["id"],
+                    status="error",
+                )
+            # Use LangChain's ainvoke which handles sync/async tools properly
+            result = await tool.ainvoke(tool_call["args"], config)
+            # Ensure the ToolMessage has the correct ID (ainvoke usually does this but we're safe)
+            if hasattr(result, "tool_call_id"):
+                result.tool_call_id = tool_call["id"]
+            return result
+        except Exception as e:
+            logger.error("Error executing tool '%s' in parallel: %s", tool_call.get("name"), e)
+            return ToolMessage(
+                content=f"Error executing tool '{tool_call['name']}': {e}",
+                tool_call_id=tool_call["id"],
+                status="error",
+            )
+
 MAX_RPM: int = int(os.environ.get("FAULTLINE_MAX_RPM", "36"))
+CALL_TIMEOUT_S: int = 600  # Default 10m timeout for LLM calls
+
+
+
+
 
 
 class LLMRateLimiter:
@@ -241,6 +298,7 @@ class BudgetConfig:
     max_output_tokens: int = int(os.environ.get("FAULTLINE_MAX_OUTPUT_TOKENS", "4096"))
     max_rpm: int = int(os.environ.get("FAULTLINE_MAX_RPM", "36"))
     reasoning_level: str = os.environ.get("FAULTLINE_REASONING_LEVEL", "normal")
+    context_ratio: float = float(os.environ.get("FAULTLINE_CONTEXT_RATIO", "0.8"))
 
     def __post_init__(self):
         if self.reasoning_level not in REASONING_PROFILES:
@@ -255,7 +313,15 @@ class BudgetConfig:
     def reasoning_instruction(self) -> str:
         return REASONING_PROFILES[self.reasoning_level]["instruction"]
 
-    def budget_prompt_block(self, llm_used: int, tool_used: int) -> str:
+    def budget_prompt_block(self, llm_used: int, tool_used: int, active_model_value: Optional[str] = None) -> str:
+        # Resolve dynamic context limit if a model is provided
+        display_limit = self.max_input_tokens
+        if active_model_value:
+            from core.model_registry import get_model_info
+            m = get_model_info(active_model_value)
+            if m:
+                display_limit = int(m.context_window * self.context_ratio)
+
         return (
             "\n═══════════════════════════════════════════════════════════════════════════════\n"
             "REAL-WORLD BUDGET CONSTRAINTS  ← read this before every action\n"
@@ -268,7 +334,7 @@ class BudgetConfig:
             f"  Tool calls used : {tool_used} / {self.max_tool_calls}  "
             f"({'STOP NOW — over budget!' if tool_used >= self.max_tool_calls else f'{self.max_tool_calls - tool_used} remaining'})\n"
             f"  Max output/call : {self.max_output_tokens} tokens\n"
-            f"  Max context     : {self.max_input_tokens:,} tokens\n\n"
+            f"  Max context     : {display_limit:,} tokens ({int(self.context_ratio * 100)}% of model capability)\n\n"
             f"{self.reasoning_instruction}\n\n"
             "RULES:\n"
             "- DO NOT OVERTHINK. Be decisive.\n"
@@ -408,11 +474,12 @@ class CampaignState(TypedDict):
     session_headers: dict
 
 
-def _load_api_schemas(run_folder: str) -> str:
+def _load_api_schemas(run_folder: str, compact: bool = False) -> str:
     """
-    Read api_schemas.json saved by the pipeline and return a compact
-    system-prompt block the agent can use to write correctly-typed API tests.
-    Returns an empty string if the file is missing or unreadable.
+    Read api_schemas.json saved by the pipeline and return a block the agent
+    can use to write correctly-typed API tests.
+    
+    compact: If True, only show names/files to save context space.
     """
     schema_path = Path(run_folder) / "api_schemas.json"
     if not schema_path.exists():
@@ -422,6 +489,13 @@ def _load_api_schemas(run_folder: str) -> str:
         schemas = _json.loads(schema_path.read_text(encoding="utf-8"))
         if not schemas:
             return ""
+        if compact:
+            lines = ["API Serializer Schemas (Index Only):\n"]
+            for s in schemas[:max_schemas]:
+                lines.append(f"  - {s['name']} ({s['file']})")
+            lines.append("\n[SCHEMA COMPACTED] Call `read_run_folder_file('api_schemas.json')` for full field details.")
+            return "\n".join(lines) + "\n"
+
         lines = ["API Serializer Schemas (extracted from AST — use these to build request bodies):\n"]
         max_schemas = int(os.environ.get("FAULTLINE_MAX_SCHEMAS", "30"))
         for s in schemas[:max_schemas]:
@@ -443,16 +517,27 @@ def _load_api_schemas(run_folder: str) -> str:
 
 def _seed_api_test_data(run_folder: str) -> None:
     """
-    Build api_test_data.json from the api_schemas.json written by the pipeline.
-    Generates per-endpoint fixtures with required fields filled with typed sample
-    values so the agent never has to guess field names or types from scratch.
-    Only runs if api_test_data.json doesn't already exist.
+    Populate api_test_data.json by matching discovered endpoints with serializer schemas.
+    Ensures 100% project coverage by seeding fixtures for every known route.
     """
-    test_data_path = Path(run_folder) / "api_test_data.json"
-    if test_data_path.exists():
+    rf = Path(run_folder)
+    schema_path = rf / "api_schemas.json"
+    map_path = rf / "endpoint_map.json"
+    
+    if not schema_path.exists() or not map_path.exists():
+        logger.warning("Seeding skipped: missing api_schemas.json or endpoint_map.json")
         return
-    schema_path = Path(run_folder) / "api_schemas.json"
 
+    try:
+        schemas = json.loads(schema_path.read_text(encoding="utf-8"))
+        endpoints = json.loads(map_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        logger.error("Failed to load seeding data: %s", e)
+        return
+
+    # Index schemas by a clean name for fuzzy matching
+    schema_idx = {s["name"].lower(): s for s in schemas}
+    
     # Type → sensible sample value
     _SAMPLE: dict = {
         "CharField": "example_value",
@@ -477,97 +562,128 @@ def _seed_api_test_data(run_folder: str) -> None:
             return "TestPass123!"
         return "value"
 
-    schemas: list = []
-    if schema_path.exists():
-        try:
-            schemas = json.loads(schema_path.read_text(encoding="utf-8"))
-        except Exception:
-            schemas = []
+    seeded_endpoints = {}
 
-    # Build one fixture entry per serializer
-    endpoints: dict = {}
-    for s in schemas:
-        name = s.get("name", "")
-        file_path = s.get("file", "")
-        fields = s.get("fields", [])
-        req = {f["name"]: _sample(f.get("type", "")) for f in fields if f.get("required")}
-        opt = {f["name"]: _sample(f.get("type", "")) for f in fields if not f.get("required")}
+    for ep in endpoints:
+        path = ep.get("path", "")
+        method = ep.get("method", "GET")
+        view = str(ep.get("view", "")).lower()
+        
+        # 1. Path normalization
+        is_traced = ep.get("traced", False)
+        
+        # If it's already an absolute URL, leave it alone
+        if path.startswith("http"):
+            pass
+        else:
+            # Ensure leading slash
+            if not path.startswith("/"):
+                path = "/" + path
+            
+            # Heuristics for untraced routes (fallback logic)
+            if not is_traced:
+                # If discovery didn't find /api/ but we know it's a DRF project
+                if not path.startswith("/api/") and not path.startswith("/admin/") and not path.startswith("/static/"):
+                     has_api_elsewhere = any(str(e.get("path", "")).startswith("/api/") for e in endpoints if e.get("traced"))
+                     if has_api_elsewhere or "viewset" in view or "api" in view:
+                         path = "/api" + path
+                
+                # Ensure trailing slash for DRF style if it looks like a directory
+                if not path.endswith("/") and "." not in path.split("/")[-1]:
+                    path += "/"
 
-        # Guess endpoint path from serializer name (heuristic)
-        guess = name.replace("Serializer", "").lower()
-        guess_path = f"/api/{guess}/" if guess else "/api/unknown/"
+        # 2. Match with serializer
+        payload = {}
+        matched_schema = None
+        
+        # Try direct name match
+        for s_name, s_data in schema_idx.items():
+            clean_s = s_name.replace("serializer", "").replace("list", "").replace("detail", "")
+            if clean_s and (clean_s in view or clean_s in path.lower()):
+                matched_schema = s_data
+                break
+        
+        if matched_schema:
+            for field in matched_schema.get("fields", []):
+                f_name = field["name"]
+                payload[f_name] = _sample(field.get("type", "string"))
 
-        endpoints[guess_path] = {
-            "serializer": name,
-            "file": file_path,
-            "method": "POST",
-            "auth_required": True,
-            "request_body": {**req},
-            "optional_fields": opt,
-            "happy_expected_status": 201,
-            "sad_cases": [
-                {
-                    "name": "missing_required_field",
-                    "mutations": {list(req.keys())[0]: None} if req else {},
-                    "expected_status": 400,
-                }
-            ] if req else [],
+        # 3. Add to seed data
+        key = f"{method} {path}"
+        seeded_endpoints[key] = {
+            "method": method,
+            "url": path,
+            "payload": payload,
+            "auth_required": ep.get("auth_required", False) or "login" in path or "profile" in path,
+            "description": f"Seeded from {ep.get('file', 'unknown')}: {ep.get('view', 'view')}",
+            "status": "Untested"
         }
 
-    # Special-case: if we see password-related fields, surface auth fixture shape
-    auth_fixture: dict = {}
+    # Special-case auth
+    auth_fixture = {}
     for s in schemas:
-        name = s.get("name", "")
-        if "register" in name.lower() or "signup" in name.lower():
-            fields = s.get("fields", [])
-            auth_fixture["register"] = {f["name"]: _sample(f.get("type", "")) for f in fields if f.get("required")}
-        if "login" in name.lower():
-            fields = s.get("fields", [])
-            auth_fixture["login"] = {f["name"]: _sample(f.get("type", "")) for f in fields if f.get("required")}
+        name = s.get("name", "").lower()
+        if "register" in name or "signup" in name:
+            auth_fixture["register_payload"] = {f["name"]: _sample(f.get("type", "")) for f in s.get("fields", []) if f.get("required")}
+        if "login" in name:
+            auth_fixture["login_payload"] = {f["name"]: _sample(f.get("type", "")) for f in s.get("fields", []) if f.get("required")}
 
     data = {
-        "_instructions": (
-            "This file is the canonical source of truth for API test payloads. "
-            "Fixtures are seeded from the AST-extracted serializer schemas. "
-            "Read this file with read_run_folder_file before writing any test. "
-            "Update endpoint paths, expected statuses, and request bodies as you discover the real API routes. "
-            "Do NOT hardcode payloads in test scripts — reference this file instead."
-        ),
-        "auth": auth_fixture or {
-            "register_url": "/api/auth/registration/",
+        "project_name": "Discovered Project",
+        "base_url": "{{TARGET_URL}}",
+        "auth": {
+            "register_url": "/api/auth/register/",
             "login_url": "/api/auth/login/",
             "token_field": "access",
-            "register_payload": {"username": "testuser", "email": "user@example.com", "password1": "TestPass123!", "password2": "TestPass123!"},
-            "login_payload": {"email": "user@example.com", "password": "TestPass123!"},
+            **auth_fixture
         },
-        "endpoints": endpoints if endpoints else {
-            "/api/example/": {
-                "method": "POST",
-                "auth_required": True,
-                "request_body": {"field1": "value1"},
-                "happy_expected_status": 201,
-                "sad_cases": [],
-            }
-        },
+        "endpoints": seeded_endpoints
     }
-    try:
-        test_data_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-    except Exception:
-        pass
+    
+    target = rf / "api_test_data.json"
+    target.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    logger.info("Successfully seeded %d endpoints for testing.", len(seeded_endpoints))
 
 
 class AegisAgent:
+    # ── Turn Timeout Constants ──────────────────────────────────────────
+    _TURN_TIMEOUT_S = 600       # 10 minutes (hard abort)
+    _INTERRUPT_WARNING_S = 300  # 5 minutes (yellow)
+    _CRITICAL_WARNING_S = 480   # 8 minutes (orange)
+    _AUTO_ABORT_WARNING_S = 570 # 9.5 minutes (red)
+
     def __init__(self, budget: Optional[BudgetConfig] = None):
         self._renderer = None
         self._budget = budget or BudgetConfig()
         self._llm_calls_used = 0
         self._tool_calls_used = 0
+        self._tracker = None
         self.workflow = StateGraph(CampaignState)
         self._build_graph()
 
+    def _sync_state_from_history(self, messages: List[BaseMessage]) -> int:
+        """
+        Scan message history to re-calculate LLM calls, tool calls, and turn count.
+        Returns the inferred turn count (iteration).
+        """
+        llm_calls = 0
+        tool_calls = 0
+        turns = 0
+
+        for msg in messages:
+            if isinstance(msg, AIMessage):
+                llm_calls += 1
+                turns += 1
+                if msg.tool_calls:
+                    tool_calls += len(msg.tool_calls)
+        
+        self._llm_calls_used = llm_calls
+        self._tool_calls_used = tool_calls
+        return turns
+
     def _build_graph(self):
         self.workflow.add_node("agent", self.agent_node)
-        self.workflow.add_node("tools", ToolNode(FAULTLINE_TOOLS))
+        self.workflow.add_node("tools", ParallelToolNode(FAULTLINE_TOOLS))
         self.workflow.set_entry_point("agent")
         self.workflow.add_conditional_edges(
             "agent",
@@ -645,7 +761,30 @@ class AegisAgent:
                     await asyncio.sleep(15)
                     elapsed += 15
                     if renderer:
-                        renderer.show_cli_waiting(elapsed, cli_provider)
+                        # Show warnings based on elapsed time
+                        if elapsed >= self._AUTO_ABORT_WARNING_S:
+                            renderer.show_message(
+                                f"  🔴 [bold red]AUTO-INTERRUPT IN {int(self._TURN_TIMEOUT_S - elapsed)}s[/bold red]",
+                                style="red"
+                            )
+                        elif elapsed >= self._CRITICAL_WARNING_S:
+                            renderer.show_message(
+                                f"  🟠 [orange3]Turn approaching timeout ({elapsed/60:.1f}m elapsed)[/orange3]",
+                                style="orange3"
+                            )
+                        elif elapsed >= self._INTERRUPT_WARNING_S:
+                            renderer.show_message(
+                                f"  🟡 [dim]Thinking takes longer than usual ({elapsed/60:.1f}m)...[/dim]",
+                                style="yellow"
+                            )
+                        else:
+                            renderer.show_cli_waiting(elapsed, cli_provider)
+                    
+                    if elapsed >= self._TURN_TIMEOUT_S:
+                        logger.warning(f"Turn timeout reached ({self._TURN_TIMEOUT_S}s). Signalling interrupt.")
+                        if input_handler:
+                            input_handler.pause_requested.set()
+                        break
 
             for turn in range(1, max_turns + 1):
                 if renderer:
@@ -773,9 +912,30 @@ class AegisAgent:
         header_str = "\n- Session Headers: " + str(session_headers) if session_headers else ""
 
         # Inject API serializer schemas extracted by the pipeline (Step 4 feed)
-        schema_str = _load_api_schemas(run_folder)
+        # PERFORMANCE: Only show full schemas during Discovery. Compress for Test/Chaos.
+        is_discovery = getattr(self._tracker, "current_phase", "") == "discovery" if self._tracker else True
+        schema_str = _load_api_schemas(run_folder, compact=not is_discovery)
 
-        budget_block = budget.budget_prompt_block(self._llm_calls_used, self._tool_calls_used)
+        # Resolve active model for budget display and context limit
+        active_model_value = getattr(llm, "model_name", None) or getattr(llm, "model", None)
+        budget_block = budget.budget_prompt_block(self._llm_calls_used, self._tool_calls_used, active_model_value)
+
+        # Dynamic context limit: configurable ratio of model window if known
+        context_limit = budget.max_input_tokens
+        if active_model_value:
+            from core.model_registry import get_model_info
+            minfo = get_model_info(active_model_value)
+            if minfo:
+                # 1. Reserve output tokens AND a safety buffer (20k) for overhead/estimation error.
+                # This ensures we NEVER hit the hard limit of the provider.
+                safety_buffer = int(os.environ.get("FAULTLINE_CONTEXT_BUFFER", "20000"))
+                hard_input_cap = minfo.context_window - budget.max_output_tokens - safety_buffer
+                
+                # 2. Apply the dynamic ratio against the total window
+                context_limit = min(int(minfo.context_window * budget.context_ratio), hard_input_cap)
+                
+                logger.info(f"Dynamic Context: using {context_limit:,} tokens ({int(budget.context_ratio * 100)}% of {minfo.name}, safety buffer {safety_buffer:,})")
+                
 
         context_msg = SystemMessage(content=(
             f"{SYSTEM_PROMPT}\n\n"
@@ -789,7 +949,6 @@ class AegisAgent:
             f"- API Test Data: {run_folder}/api_test_data.json  ← read with read_run_folder_file; update as you discover endpoints\n"
             f"- Transcript: {run_folder}/transcript.txt  ← human-readable conversation log\n"
             f"{header_str}\n\n"
-            f"{schema_str}"
             "Aggressively investigate the structure, validate attacks, and fire them. "
             "If writing functional tests, use the Session Headers in your requests to bypass authentication. "
             "Use the API Serializer Schemas above to generate correctly-typed request bodies — "
@@ -804,29 +963,66 @@ class AegisAgent:
         async def _llm_ticker() -> None:
             elapsed = 0
             while True:
-                await asyncio.sleep(10)
-                elapsed += 10
+                await asyncio.sleep(15)
+                elapsed += 15
                 if renderer:
-                    renderer.show_cli_waiting(elapsed, f"Agent ({llm.model_name})")
+                    # Show warnings based on elapsed time
+                    if elapsed >= self._AUTO_ABORT_WARNING_S:
+                        renderer.show_message(
+                            f"  🔴 [bold red]AUTO-INTERRUPT IN {int(self._TURN_TIMEOUT_S - elapsed)}s[/bold red]",
+                            style="red"
+                        )
+                    elif elapsed >= self._CRITICAL_WARNING_S:
+                        renderer.show_message(
+                            f"  🟠 [orange3]Turn approaching timeout ({elapsed/60:.1f}m elapsed)[/orange3]",
+                            style="orange3"
+                        )
+                    elif elapsed >= self._INTERRUPT_WARNING_S:
+                        renderer.show_message(
+                            f"  🟡 [dim]Thinking takes longer than usual ({elapsed/60:.1f}m)...[/dim]",
+                            style="yellow"
+                        )
+                    else:
+                        renderer.show_cli_waiting(elapsed, f"Agent ({getattr(llm, 'model_name', None) or getattr(llm, 'model', 'unknown')})")
+                
+                if elapsed >= self._TURN_TIMEOUT_S:
+                    logger.warning(f"Standard turn timeout reached ({self._TURN_TIMEOUT_S}s). Signalling interrupt.")
+                    if input_handler:
+                        input_handler.pause_requested.set()
+                    break
+
+        # Prepare messages
+        messages_to_process = state["messages"]
+
+        # Vision guardrail — re-anchor the LLM after turn 1 so the long
+        # tool-output history can't bury the original objective.
+        # MOVE THIS BEFORE build_tiered_context so it's included in the token budget!
+        if self._llm_calls_used >= 2:
+            _coverage = _recent_step_coverage(state.get("run_folder", ""))
+            _reminder_text = VISION_REMINDER + f"\nRecent step coverage: {_coverage}.\n"
+            # Injected as a SystemMessage at the start of history
+            messages_to_process = [SystemMessage(content=_reminder_text)] + messages_to_process
 
         ticker_task = asyncio.create_task(_llm_ticker())
+        
+        # Create the tiered message list
+        final_messages = [context_msg]
+        
+        # Inject the schema as a Tier-eligible message if not already present
+        # This allows the content_manager to summarize/store it when context is tight.
+        if schema_str and not any("API Serializer Schemas" in str(m.content) for m in state["messages"]):
+            final_messages.append(HumanMessage(content=schema_str))
+            
+        final_messages.extend(messages_to_process)
+
         try:
             tiered_msgs, cm_stats = build_tiered_context(
                 system_msg=context_msg,
-                messages=state["messages"],
+                messages=final_messages,
                 run_folder=state.get("run_folder", ""),
-                max_tokens=budget.max_input_tokens,
+                max_tokens=context_limit,
                 current_turn=self._llm_calls_used,
             )
-
-            # Vision guardrail — re-anchor the LLM after turn 1 so the long
-            # tool-output history can't bury the original objective.
-            if self._llm_calls_used >= 2:
-                _coverage = _recent_step_coverage(state.get("run_folder", ""))
-                _reminder = VISION_REMINDER + (
-                    f"\nRecent step coverage: {_coverage}.\n"
-                )
-                tiered_msgs = [SystemMessage(content=_reminder), *tiered_msgs]
             if cm_stats["windowing_applied"]:
                 logger.info(
                     "content_manager: %d→%d est. tokens | cycles: %d total, "
@@ -882,7 +1078,8 @@ class AegisAgent:
                         )
                     return {"messages": [AIMessage(content=(
                         f"[TIMEOUT] The previous LLM call exceeded {CALL_TIMEOUT_S}s and was cancelled. "
-                        "For the next step: be extremely concise, pick ONE action only, and avoid large outputs."
+                        "This usually happens when you are overthinking or providing too much reasoning. "
+                        "For the next step: SKIP ALL REASONING, pick ONE action only, and use the most concise tool arguments possible."
                     ))]}
                 except Exception as exc:
                     err_str = str(exc)
@@ -1010,6 +1207,8 @@ class AegisAgent:
         hitl_manager=None,
         input_handler=None,
         resumed_messages: Optional[list] = None,
+        resumed_turn: int = 0,
+        resumed_findings: int = 0,
         mode: str = "hybrid",
         session_store=None,
     ):
@@ -1091,6 +1290,23 @@ class AegisAgent:
 
         iteration = 0
         findings_count = 0
+
+        # Authoritative accumulated message list.
+        accumulated_messages: list = list(initial_state.get("messages", []))
+
+        if resumed_messages:
+            iteration = resumed_turn or self._sync_state_from_history(accumulated_messages)
+            
+            if resumed_findings > 0:
+                findings_count = resumed_findings
+            else:
+                # Fallback: scan for record_finding tool calls
+                for m in accumulated_messages:
+                    if isinstance(m, AIMessage):
+                        for tc in (getattr(m, "tool_calls", None) or []):
+                            if tc.get("name") == "record_finding":
+                                findings_count += 1
+
         agent_start = time.monotonic()
 
         # Checkpoint debouncing — write every N iterations or M seconds, not every event
@@ -1102,17 +1318,13 @@ class AegisAgent:
         # Progress tracker — keeps the agent aware of its plan, budget, and progress
         max_turns = int(os.environ.get("FAULTLINE_MAX_TURNS") or os.environ.get("FAULTLINE_MAX_LLM_CALLS") or "40")
         token_budget = int(os.environ.get("FAULTLINE_TOKEN_BUDGET", "200000"))
-        tracker = ProgressTracker(
+        self._tracker = ProgressTracker(
             max_turns=max_turns,
             token_budget=token_budget,
             start_time=agent_start,
+            turn=iteration,
         )
-
-        # Authoritative accumulated message list.
-        # LangGraph's astream(updates mode) emits per-node deltas, not the full
-        # accumulated state.  We maintain this list separately so checkpoints
-        # and steering-restarts always have the complete conversation history.
-        accumulated_messages: list = list(initial_state.get("messages", []))
+        tracker = self._tracker
 
         # Start the input handler for Esc key detection
         if input_handler:
@@ -1214,6 +1426,7 @@ class AegisAgent:
                                     mode=mode,
                                     pipeline_completed=True,
                                     session_headers=session_headers,
+                                    findings_count=findings_count,
                                 )
                                 if renderer:
                                     renderer.show_message(
@@ -1238,6 +1451,24 @@ class AegisAgent:
                                     pass
                                 return "Agent phase skipped."
 
+                            elif action.type == ActionType.FINISH:
+                                f.write("\n=== OPERATOR ACTION: FINISH ===\n")
+                                if renderer:
+                                    renderer.show_message("🏁 Operator requested immediate finish. Forced synthesis engaged.")
+                                finish_msg = HumanMessage(
+                                    content=(
+                                        "[SYSTEM] The operator has requested an immediate conclusion. "
+                                        "STOP all testing. Summarize all findings into the final report "
+                                        "now and end with [DONE]."
+                                    )
+                                )
+                                accumulated_messages.append(finish_msg)
+                                # Force turn limit to trigger soon
+                                tracker.max_turns = min(tracker.max_turns, iteration + 2)
+                                input_handler.resume_polling()
+                                should_restart = True
+                                break
+
                             elif action.type == ActionType.SAVE:
                                 ckpt_path = save_checkpoint(
                                     run_folder=run_folder,
@@ -1249,6 +1480,7 @@ class AegisAgent:
                                     mode=mode,
                                     pipeline_completed=True,
                                     session_headers=session_headers,
+                                    findings_count=findings_count,
                                 )
                                 if renderer:
                                     renderer.show_message(f"  Checkpoint saved: {ckpt_path}", style="green")
@@ -1435,6 +1667,19 @@ class AegisAgent:
                                                 renderer.show_finding("medium", title)
 
                         # ── Update progress tracker ────────────────
+                        # Detect health from recent errors
+                        for msg in reversed(accumulated_messages):
+                            if isinstance(msg, ToolMessage) and msg.status == "error":
+                                err_text = str(msg.content).lower()
+                                if any(s in err_text for s in ["connection refused", "timeout", "network unreachable", "failed to connect"]):
+                                    tracker.target_health = "🔴 CRITICAL: Target Down / Unreachable"
+                                    break
+                            if isinstance(msg, ToolMessage) and msg.status == "success":
+                                tracker.target_health = "🟢 Healthy"
+                                break
+
+                        tracker.target_dir = target_dir
+                        tracker.target_url = target_url
                         tracker.update(accumulated_messages, iteration, findings_count)
 
                         # Inject progress context into agent state
@@ -1447,13 +1692,23 @@ class AegisAgent:
                                 and m.content.startswith("═══ PROGRESS STATUS")
                             )
                         ]
-                        progress_msg = tracker.build_context_message()
+                        # Resolve active model for dynamic budget display
+                        rt_model, _ = get_active_model()
+                        active_model_val = rt_model or os.environ.get("FAULTLINE_MODEL")
+                        progress_msg = tracker.build_context_message(run_folder=run_folder, active_model_value=active_model_val)
                         accumulated_messages.append(progress_msg)
                         initial_state["messages"] = accumulated_messages
 
                         # ── Write heartbeat to live_report.md ─────
-                        _budget_val = max(1, tracker.token_budget)
-                        _pct = min(100, int(tracker.total_tokens_used / _budget_val * 100))
+                        effective_budget = tracker.token_budget
+                        if active_model_val:
+                            from core.model_registry import get_model_info
+                            m_info = get_model_info(active_model_val)
+                            if m_info:
+                                ratio = float(os.environ.get("FAULTLINE_CONTEXT_RATIO", "0.8"))
+                                effective_budget = int(m_info.context_window * ratio)
+                        
+                        _pct = min(100, int(tracker.total_tokens_used / max(1, effective_budget) * 100))
                         _last_tool = tracker.tools_history[-1] if tracker.tools_history else ""
                         try:
                             _live_report.write_heartbeat_sync(
@@ -1488,10 +1743,10 @@ class AegisAgent:
                         _phase_cap_key = f'_phase_cap_sent_{tracker.current_phase}'
                         if tracker.is_phase_capped and not getattr(self, _phase_cap_key, False):
                             setattr(self, _phase_cap_key, True)
-                            from core.progress_tracker import PHASE_ORDER, PHASE_CAPS
+                            from core.progress_tracker import PHASE_ORDER
                             _cur_idx = PHASE_ORDER.index(tracker.current_phase)
                             _next_phase = PHASE_ORDER[min(_cur_idx + 1, len(PHASE_ORDER) - 1)]
-                            _cap = PHASE_CAPS[tracker.current_phase]
+                            _cap = tracker._get_phase_caps()[tracker.current_phase]
                             phase_msg = HumanMessage(
                                 content=(
                                     f"[SYSTEM] Phase cap reached: {tracker.current_phase.upper()} "
@@ -1560,6 +1815,7 @@ class AegisAgent:
                                 mode=mode,
                                 pipeline_completed=True,
                                 session_headers=session_headers,
+                                findings_count=findings_count,
                             )
                             _last_checkpoint_turn = iteration
                             _last_checkpoint_time = _now
@@ -1579,6 +1835,17 @@ class AegisAgent:
 
         if renderer:
             renderer.show_phase_timing("Agent phase")
+            renderer.show_message(
+                f"\n[bold green]Campaign Completed.[/bold green]\n\n"
+                f"  📂  [bold]Generated Artifacts:[/bold]\n"
+                f"  - Final Findings : {run_folder}/vulnerability_report.md\n"
+                f"  - Activity Log   : {run_folder}/live_report.md\n"
+                f"  - API Index      : {run_folder}/api_test_data.json\n"
+                f"  - Test Scripts   : {run_folder}/testcases/\n"
+                f"  - Full Transcript: {run_folder}/transcript.txt\n\n"
+                f"  🔄  [bold]Resume Command :[/bold] python faultline.py --resume {run_folder}\n",
+                style="green"
+            )
 
         return "Campaign Completed."
 

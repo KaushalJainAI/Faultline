@@ -40,13 +40,14 @@ from langchain_core.messages import (
     ToolMessage,
 )
 
+import os
 logger = logging.getLogger("AegisAgent")
 
 # ── Tuning constants ────────────────────────────────────────────────────────
-CHARS_PER_TOKEN: int = 4
-SUMMARIZATION_THRESHOLD_TOKENS: int = 5_000
+CHARS_PER_TOKEN: float = 2.2  # Extremely conservative for JSON-heavy prompts
+SUMMARIZATION_THRESHOLD_TOKENS: int = int(os.environ.get("FAULTLINE_SUMMARY_THRESHOLD", "3000"))
 EXCERPT_CHARS: int = 800
-TIER2_CYCLES: int = 5
+TIER2_CYCLES: int = int(os.environ.get("FAULTLINE_TIER2_CYCLES", "3"))
 MEMORY_LEDGER_MAX_ROWS: int = 300        # LRU-prune above this
 MEMORY_LEDGER_INLINE_ROWS: int = 150     # rows shown inline in system prompt
 
@@ -468,14 +469,32 @@ def build_tiered_context(
 
     stats["windowing_applied"] = True
 
-    # Separate the original HumanMessage (always Tier 1)
+    # Separate HumanMessage and all SystemMessages (always Tier 1)
+    # DEDUPLICATION: SystemMessages (reminders) can accumulate and bloat context.
+    # Keep only the latest unique SystemMessage content to prevent "reminder-stacking".
     human_msg: Optional[HumanMessage] = None
+    system_msgs: List[SystemMessage] = []
+    seen_sys_content = set()
+    
+    # Process messages in reverse to keep the LATEST system messages
+    temp_system_msgs = []
     rest: List[BaseMessage] = []
-    for msg in messages:
-        if human_msg is None and isinstance(msg, HumanMessage):
+    for msg in reversed(messages):
+        if isinstance(msg, SystemMessage):
+            content_hash = hash(str(msg.content))
+            if content_hash not in seen_sys_content:
+                temp_system_msgs.append(msg)
+                seen_sys_content.add(content_hash)
+            else:
+                stats["cycles_dropped"] = stats.get("cycles_dropped", 0) + 1 # count as pruned
+        elif human_msg is None and isinstance(msg, HumanMessage):
             human_msg = msg
         else:
             rest.append(msg)
+    
+    # Restore correct order
+    system_msgs = list(reversed(temp_system_msgs))
+    rest.reverse()
 
     cycles = _extract_cycles(rest)
     stats["cycles_total"] = len(cycles)
@@ -525,6 +544,7 @@ def build_tiered_context(
     total_est = (
         sys_tokens
         + memory_tokens
+        + sum(_msg_tokens(s) for s in system_msgs)
         + (_msg_tokens(human_msg) if human_msg else 0)
         + _list_tokens(tier3_msgs)
         + _list_tokens(tier2_msgs)
@@ -532,14 +552,44 @@ def build_tiered_context(
     )
 
     if total_est > max_tokens and tier3_msgs:
+        tier3_tokens = _list_tokens(tier3_msgs)
         logger.warning(
             "content_manager: dropping Tier 3 prose (%d est. tokens) — "
             "data still accessible via memory.md ledger",
-            _list_tokens(tier3_msgs),
+            tier3_tokens,
         )
         stats["cycles_dropped"] = stats["cycles_compressed"]
         stats["cycles_compressed"] = 0
         tier3_msgs = []
+        total_est -= tier3_tokens
+
+    # ── Progressive Tier 2 pruning: drop oldest cycles one-by-one if still over ──
+    if total_est > max_tokens and tier2_msgs:
+        # Partition already-processed tier2_msgs back into per-cycle buckets
+        # by finding AIMessage boundaries, so we don't re-process.
+        tier2_cycles_split: List[List[BaseMessage]] = []
+        current_cycle: List[BaseMessage] = []
+        for msg in tier2_msgs:
+            if isinstance(msg, AIMessage) and current_cycle:
+                tier2_cycles_split.append(current_cycle)
+                current_cycle = [msg]
+            else:
+                current_cycle.append(msg)
+        if current_cycle:
+            tier2_cycles_split.append(current_cycle)
+
+        while tier2_cycles_split and total_est > max_tokens:
+            dropped = tier2_cycles_split.pop(0)
+            dropped_tokens = _list_tokens(dropped)
+            total_est -= dropped_tokens
+            stats["cycles_dropped"] = stats.get("cycles_dropped", 0) + 1
+            stats["cycles_in_tier2"] = max(0, stats["cycles_in_tier2"] - 1)
+            logger.warning(
+                "content_manager: dropping oldest Tier 2 cycle (%d est. tokens) to fit budget",
+                dropped_tokens,
+            )
+
+        tier2_msgs = [m for cycle in tier2_cycles_split for m in cycle]
 
     # ── Assemble: [System, Memory, Human, Tier3?, Tier2..., Tier1-latest] ──
     final = [system_msg]
@@ -547,6 +597,7 @@ def build_tiered_context(
         final.append(memory_msg)
     if human_msg:
         final.append(human_msg)
+    final.extend(system_msgs)
     final.extend(tier3_msgs)
     final.extend(tier2_msgs)
     final.extend(tier1_msgs)

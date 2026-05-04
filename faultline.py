@@ -212,6 +212,8 @@ async def run_agent(
     run_folder: Path,
     input_handler=None,
     resumed_messages=None,
+    resumed_turn: int = 0,
+    resumed_findings: int = 0,
     mode: str = "hybrid",
     session_store: SessionStore = None,
 ) -> None:
@@ -282,6 +284,8 @@ async def run_agent(
         hitl_manager=hitl if not args.no_hitl else None,
         input_handler=input_handler,
         resumed_messages=resumed_messages,
+        resumed_turn=resumed_turn,
+        resumed_findings=resumed_findings,
         mode=mode,
         session_store=session_store,
     )
@@ -379,6 +383,8 @@ async def main_async() -> int:
                 args, renderer, run_folder,
                 input_handler=input_handler,
                 resumed_messages=data.get("messages"),
+                resumed_turn=data.get("turn", 0),
+                resumed_findings=data.get("findings_count", 0),
                 mode=args.mode,
                 session_store=session_store,
             )
@@ -613,6 +619,7 @@ async def main_async() -> int:
     renderer.show_complete(
         report_path or str(run_folder),
         auto_open=not getattr(args, 'no_open', False),
+        run_folder=str(run_folder),
     )
     return 0
 

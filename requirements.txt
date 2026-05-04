@@ -9,6 +9,9 @@ httpx
 psutil
 watchdog
 ruff
+bandit[toml]
+semgrep
+pip-audit
 python-dotenv
 pytest
 pytest-django

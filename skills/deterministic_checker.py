@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -40,6 +41,11 @@ class DeterministicChecker:
         findings.extend(self.check_imports())
         findings.extend(self.check_static_runtime_hazards())
         findings.extend(self.run_ruff())
+        findings.extend(self.run_bandit())
+        findings.extend(self.run_semgrep())
+        findings.extend(self.run_pip_audit())
+        findings.extend(self.run_gitleaks())
+        findings.extend(self.run_django_deploy_check())
         findings.extend(self.run_pip_check())
         findings.extend(self.run_pytest_collect())
         
@@ -224,6 +230,202 @@ class DeterministicChecker:
                 file_path=issue.get("filename", "").replace(str(self.target_dir) + os.sep, ""),
                 line_number=(issue.get("location") or {}).get("row"),
                 suggested_fix="Apply the Ruff recommendation or suppress it with a clear project-local reason.",
+            ))
+        return findings
+
+    def run_bandit(self) -> List[CheckFinding]:
+        """Run bandit SAST scanner for common Python security issues."""
+        bandit = self._find_executable("bandit")
+        result = self._run([bandit, "-r", ".", "-f", "json", "-q", "-ll"])
+        if result.returncode == 127:
+            return []  # not installed — not a blocker
+        if result.returncode not in (0, 1):
+            return [self._command_failure("Bandit scan failed", result, "security_candidate")]
+        try:
+            data = json.loads(result.stdout or "{}")
+        except json.JSONDecodeError:
+            return []
+        _sev_map = {"HIGH": "high", "MEDIUM": "medium", "LOW": "low"}
+        findings = []
+        for issue in data.get("results", []):
+            sev = _sev_map.get(issue.get("issue_severity", "").upper(), "medium")
+            fp = issue.get("filename", "")
+            try:
+                fp = str(Path(fp).relative_to(self.target_dir))
+            except ValueError:
+                pass
+            findings.append(CheckFinding(
+                title=f"Bandit {issue.get('test_id', '')}: {issue.get('test_name', '')}",
+                category="security_candidate",
+                severity=sev,
+                summary=issue.get("issue_text", ""),
+                evidence=json.dumps(issue, indent=2),
+                file_path=fp,
+                line_number=issue.get("line_number"),
+                suggested_fix=(
+                    f"See CWE-{issue.get('issue_cwe', {}).get('id', '?')} and "
+                    f"https://bandit.readthedocs.io/en/latest/plugins/{issue.get('test_id','').lower()}.html"
+                ),
+            ))
+        return findings
+
+    def run_semgrep(self) -> List[CheckFinding]:
+        """Run semgrep with django + python rule packs for semantic security issues."""
+        semgrep = self._find_executable("semgrep")
+        result = self._run([
+            semgrep, "--config", "p/django", "--config", "p/python",
+            "--json", "--quiet", "--no-rewrite-rule-ids", ".",
+        ])
+        if result.returncode == 127:
+            return []
+        if result.returncode not in (0, 1):
+            return [self._command_failure("Semgrep scan failed", result, "security_candidate")]
+        try:
+            data = json.loads(result.stdout or "{}")
+        except json.JSONDecodeError:
+            return []
+        _sev_map = {"ERROR": "high", "WARNING": "medium", "INFO": "low"}
+        findings = []
+        for issue in data.get("results", []):
+            extra = issue.get("extra", {})
+            sev = _sev_map.get((extra.get("severity") or "WARNING").upper(), "medium")
+            fp = issue.get("path", "")
+            try:
+                fp = str(Path(fp).relative_to(self.target_dir))
+            except ValueError:
+                pass
+            findings.append(CheckFinding(
+                title=f"Semgrep {issue.get('check_id', '')}",
+                category="security_candidate",
+                severity=sev,
+                summary=extra.get("message", ""),
+                evidence=json.dumps(issue, indent=2),
+                file_path=fp,
+                line_number=(issue.get("start") or {}).get("line"),
+                suggested_fix=extra.get("metadata", {}).get("fix", "Review the semgrep rule documentation."),
+            ))
+        return findings
+
+    def run_pip_audit(self) -> List[CheckFinding]:
+        """Scan installed dependencies for known CVEs via pip-audit (PyPA advisory DB)."""
+        manifests = ("requirements.txt", "pyproject.toml", "Pipfile", "setup.py", "setup.cfg")
+        if not any((self.target_dir / m).exists() for m in manifests):
+            return []
+        result = self._run([self.target_python, "-m", "pip_audit", "--format", "json", "--skip-editable"])
+        if result.returncode == 127:
+            # pip_audit not available — try the standalone executable
+            result = self._run([self._find_executable("pip-audit"), "--format", "json", "--skip-editable"])
+        if result.returncode == 127:
+            return []
+        try:
+            data = json.loads(result.stdout or "[]")
+            # pip-audit returns either a list or {"dependencies": [...]}
+            deps = data if isinstance(data, list) else data.get("dependencies", [])
+        except json.JSONDecodeError:
+            return []
+        findings = []
+        for dep in deps:
+            for vuln in dep.get("vulns", []):
+                fix_versions = vuln.get("fix_versions", [])
+                sev = "high" if fix_versions else "medium"
+                findings.append(CheckFinding(
+                    title=f"CVE {vuln.get('id', '?')} in {dep.get('name', '?')}=={dep.get('version', '?')}",
+                    category="security_candidate",
+                    severity=sev,
+                    summary=vuln.get("description", "Known vulnerability in dependency."),
+                    evidence=json.dumps(vuln, indent=2),
+                    suggested_fix=(
+                        f"Upgrade {dep.get('name')} to {fix_versions[0]}" if fix_versions
+                        else f"No fix available yet for {vuln.get('id')}. Monitor advisories."
+                    ),
+                ))
+        return findings
+
+    def run_gitleaks(self) -> List[CheckFinding]:
+        """Scan for hardcoded secrets using gitleaks (binary, not pip-installable)."""
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
+            tmp_path = tmp.name
+        try:
+            result = self._run([
+                "gitleaks", "detect", "--source", ".", "--report-format", "json",
+                "--report-path", tmp_path, "--no-git", "--exit-code", "0",
+            ])
+            if result.returncode == 127:
+                return []  # gitleaks not installed
+            try:
+                raw = Path(tmp_path).read_text(encoding="utf-8", errors="replace")
+                leaks = json.loads(raw or "[]") or []
+            except Exception:
+                return []
+            findings = []
+            for leak in leaks:
+                fp = leak.get("File", "")
+                try:
+                    fp = str(Path(fp).relative_to(self.target_dir))
+                except ValueError:
+                    pass
+                secret_snip = (leak.get("Secret") or "")[:8] + "..." if leak.get("Secret") else "?"
+                findings.append(CheckFinding(
+                    title=f"Secret detected [{leak.get('RuleID', '?')}]: {leak.get('Description', '')}",
+                    category="security_candidate",
+                    severity="high",
+                    summary=f"Possible secret in {fp} — value starts with: {secret_snip}",
+                    evidence=json.dumps({k: v for k, v in leak.items() if k != "Secret"}, indent=2),
+                    file_path=fp,
+                    line_number=leak.get("StartLine"),
+                    suggested_fix=(
+                        "Remove the secret from source code immediately. "
+                        "Rotate the credential, add the file to .gitignore, "
+                        "and use environment variables or a secrets manager instead."
+                    ),
+                ))
+            return findings
+        finally:
+            try:
+                Path(tmp_path).unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    def run_django_deploy_check(self) -> List[CheckFinding]:
+        """Run `manage.py check --deploy` to surface Django deployment security issues."""
+        manage = self.target_dir / "manage.py"
+        if not manage.exists():
+            return []
+        result = self._run([self.target_python, "manage.py", "check", "--deploy"])
+        combined = (result.stdout or "") + (result.stderr or "")
+        if not combined.strip():
+            return []
+        findings = []
+        for line in combined.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith("ERRORS:") or ": (security." in line and "ERROR" in line:
+                sev = "high"
+            elif line.startswith("WARNINGS:") or ": (security." in line:
+                sev = "medium"
+            elif "(security." in line:
+                sev = "medium"
+            else:
+                continue
+            findings.append(CheckFinding(
+                title="Django deploy check: security misconfiguration",
+                category="security_candidate",
+                severity=sev,
+                summary=line[:300],
+                evidence=combined[:800],
+                suggested_fix=(
+                    "Run `python manage.py check --deploy` locally and address each "
+                    "HTTPS, HSTS, CSRF, SECRET_KEY, and cookie security warning."
+                ),
+            ))
+        if not findings and result.returncode != 0:
+            findings.append(CheckFinding(
+                title="Django deploy check failed",
+                category="security_candidate",
+                severity="medium",
+                summary="`manage.py check --deploy` returned a non-zero exit code.",
+                evidence=combined[:800],
             ))
         return findings
 

@@ -176,3 +176,5 @@ db/
 media/*.toml
 media/*.env
 !media/.gitkeep
+
+.kilo/

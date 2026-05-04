@@ -30,8 +30,14 @@ class ContainerGrapher:
         # 4. Calculate metrics
         self._calculate_metrics()
 
+        # Convert sets to lists for JSON serialization
+        serializable_containers = {
+            cid: {**data, "public_surface": sorted(list(data["public_surface"]))}
+            for cid, data in self.containers.items()
+        }
+
         return {
-            "containers": self.containers,
+            "containers": serializable_containers,
             "edges": self.edges,
             "mermaid": self.generate_mermaid(),
         }

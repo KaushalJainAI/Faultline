@@ -7,9 +7,13 @@ into the agent's message state between turns so the agent always
 knows exactly where it stands.
 """
 
+import hashlib
+import json
+import os
 import re
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import List, Optional
 
 from langchain_core.messages import BaseMessage, SystemMessage, AIMessage
@@ -118,22 +122,12 @@ def format_checklist(items: List[ChecklistItem]) -> str:
 # Per-phase LLM-call caps (Discovery, Test, Chaos, Report)
 PHASE_ORDER = ["discovery", "test", "chaos", "report"]
 PHASE_CAPS = {
-    "discovery": 15,
-    "test":      50,
-    "chaos":     30,
-    "report":    20,
+    "discovery": int(os.environ.get("FAULTLINE_PHASE_DISCOVERY_CAP", "30")),
+    "test":      int(os.environ.get("FAULTLINE_PHASE_TEST_CAP", "150")),
+    "chaos":     int(os.environ.get("FAULTLINE_PHASE_CHAOS_CAP", "100")),
+    "report":    int(os.environ.get("FAULTLINE_PHASE_REPORT_CAP", "50")),
 }
-# Keywords in tool names / checklist items that signal a phase transition
-_PHASE_SIGNALS = {
-    "discovery": {"list_project_files", "analyze_project_structure", "run_deterministic_checks",
-                  "glob_and_read", "fetch_endpoint_bundle", "index_project_documentation"},
-    "test":      {"run_functional_test", "copy_test_boilerplate", "read_run_folder_file",
-                  "write_run_folder_file"},
-    "chaos":     {"execute_chaos_campaign"},
-    "report":    {"record_finding", "save_vulnerability_report", "summarize_to_report"},
-}
-
-WRAP_UP_BUDGET_PCT = 0.60  # Force wrap-up message at 60% token budget (was 85%)
+WRAP_UP_BUDGET_PCT = float(os.environ.get("FAULTLINE_WRAP_UP_THRESHOLD", "0.60"))
 
 
 @dataclass
@@ -156,13 +150,40 @@ class ProgressTracker:
     start_time: float = field(default_factory=time.monotonic)
     checklist: List[ChecklistItem] = field(default_factory=list)
     tools_history: List[str] = field(default_factory=list)
+    _tool_hashes: List[str] = field(default_factory=list)
+    _last_finding_turn: int = 0
+    decision_history: List[str] = field(default_factory=list)
+    last_decision: str = ""
+    target_health: str = "Healthy"
+    target_dir: str = ""
+    target_url: str = ""
+    is_stuck: bool = False
 
     # Phase tracking
     current_phase: str = "discovery"
     phase_turns: dict = field(default_factory=lambda: {p: 0 for p in PHASE_ORDER})
 
+    # Keywords in tool names / checklist items that signal a phase transition
+    _PHASE_SIGNALS = {
+        "discovery": {"list_project_files", "analyze_project_structure", "run_deterministic_checks",
+                      "glob_and_read", "fetch_endpoint_bundle", "index_project_documentation"},
+        "test":      {"run_functional_test", "copy_test_boilerplate", "read_run_folder_file",
+                      "write_run_folder_file"},
+        "chaos":     {"execute_chaos_campaign"},
+        "report":    {"record_finding", "save_vulnerability_report", "summarize_to_report"},
+    }
+
+    def _get_phase_caps(self) -> dict:
+        """Read phase caps from environment, allowing for runtime overrides."""
+        return {
+            "discovery": int(os.environ.get("FAULTLINE_PHASE_DISCOVERY_CAP", str(PHASE_CAPS["discovery"]))),
+            "test":      int(os.environ.get("FAULTLINE_PHASE_TEST_CAP", str(PHASE_CAPS["test"]))),
+            "chaos":     int(os.environ.get("FAULTLINE_PHASE_CHAOS_CAP", str(PHASE_CAPS["chaos"]))),
+            "report":    int(os.environ.get("FAULTLINE_PHASE_REPORT_CAP", str(PHASE_CAPS["report"]))),
+        }
+
     def _infer_phase_from_tool(self, tool_name: str) -> Optional[str]:
-        for phase, signals in _PHASE_SIGNALS.items():
+        for phase, signals in self._PHASE_SIGNALS.items():
             if tool_name in signals:
                 return phase
         return None
@@ -170,7 +191,30 @@ class ProgressTracker:
     def update(self, messages: List[BaseMessage], new_iteration: int, new_findings: int) -> None:
         """Update progress from the latest message state."""
         self.turn = new_iteration
+        if new_findings > self.findings_count:
+            self._last_finding_turn = new_iteration
         self.findings_count = new_findings
+        
+        # Reset phase turn counters before re-calculating from full history
+        # to avoid double-counting old messages.
+        self.phase_turns = {p: 0 for p in PHASE_ORDER}
+        
+        # Extract decision from the latest AI message
+        for msg in reversed(messages):
+            if isinstance(msg, AIMessage) and msg.content:
+                # Extract reasoning (text before tool calls or the first paragraph)
+                content = msg.content
+                if isinstance(content, list):
+                    content = " ".join(b.get("text", "") for b in content if isinstance(b, dict))
+                
+                # Heuristic: the first 200 chars of the AI response usually contains the "Why"
+                decision = content.strip().split("\n\n")[0][:200]
+                if decision and decision != self.last_decision:
+                    self.last_decision = decision
+                    self.decision_history.append(decision)
+                    if len(self.decision_history) > 5:
+                        self.decision_history.pop(0)
+                break
 
         # Re-estimate total tokens from all messages
         self.total_tokens_used = sum(estimate_message_tokens(m) for m in messages)
@@ -203,13 +247,63 @@ class ProgressTracker:
                     name = tc.get("name", "")
                     if name and (not self.tools_history or self.tools_history[-1] != name):
                         self.tools_history.append(name)
+                    # Track hash for loop detection
+                    try:
+                        args_str = json.dumps(tc.get("args", {}), sort_keys=True)
+                        call_id = f"{name}:{args_str}"
+                        h = hashlib.md5(call_id.encode()).hexdigest()
+                        self._tool_hashes.append(h)
+                        if len(self._tool_hashes) > 10:
+                            self._tool_hashes.pop(0)
+                    except Exception:
+                        pass
+
                     # Advance phase
                     inferred = self._infer_phase_from_tool(name)
                     if inferred:
                         self.current_phase = inferred
-                        self.phase_turns[inferred] = self.phase_turns.get(inferred, 0) + 1
+                        self.phase_turns[inferred] += 1
 
-    def build_context_message(self) -> SystemMessage:
+        # Finalize stuck detection
+        if self._tool_hashes:
+            from collections import Counter
+            counts = Counter(self._tool_hashes)
+            self.is_stuck = any(count >= 3 for count in counts.values())
+
+    def _get_phase_bar(self) -> str:
+        bar = []
+        for p in PHASE_ORDER:
+            if p == self.current_phase:
+                bar.append(f"[{p.upper()}]")
+            elif PHASE_ORDER.index(p) < PHASE_ORDER.index(self.current_phase):
+                bar.append(f" {p} ")
+            else:
+                bar.append(f"({p})")
+        return " -> ".join(bar)
+
+    def _get_arch_awareness(self, run_folder: str) -> str:
+        if not run_folder: return ""
+        try:
+            p = Path(run_folder) / "container_graph.json"
+            if p.exists():
+                data = json.loads(p.read_text(encoding="utf-8"))
+                containers = data.get("containers", {})
+                # Sort by independence_score ascending (lowest score = most entangled)
+                entangled = sorted(
+                    containers.values(), 
+                    key=lambda x: x.get("metrics", {}).get("independence_score", 100)
+                )[:3]
+                if entangled:
+                    lines = ["### Architectural Awareness (Critical Modules)"]
+                    for c in entangled:
+                        score = c.get("metrics", {}).get("independence_score", 0)
+                        lines.append(f"- **{c['id']}**: Score {score} (Coupled/Entangled)")
+                    return "\n".join(lines)
+        except Exception:
+            pass
+        return ""
+
+    def build_context_message(self, run_folder: str = "", active_model_value: Optional[str] = None) -> SystemMessage:
         """
         Build a compact SystemMessage that gives the agent full awareness
         of its progress, budget, and plan state.
@@ -217,7 +311,21 @@ class ProgressTracker:
         elapsed = time.monotonic() - self.start_time
         elapsed_str = f"{elapsed / 60:.1f}m" if elapsed > 60 else f"{elapsed:.0f}s"
 
-        tokens_pct = min(100, int(self.total_tokens_used / max(1, self.token_budget) * 100))
+        # Resolve dynamic budget limit
+        effective_budget = self.token_budget
+        if active_model_value:
+            from core.model_registry import get_model_info
+            m = get_model_info(active_model_value)
+            if m:
+                ratio = float(os.environ.get("FAULTLINE_CONTEXT_RATIO", "0.8"))
+                effective_budget = int(m.context_window * ratio)
+
+        if effective_budget <= 0:
+            tokens_pct_str = "Unlimited"
+        else:
+            tokens_pct = min(100, int(self.total_tokens_used / max(1, effective_budget) * 100))
+            tokens_pct_str = f"{tokens_pct}%"
+        
         turns_remaining = max(0, self.max_turns - self.turn)
 
         # Checklist summary
@@ -234,7 +342,8 @@ class ProgressTracker:
             checklist_text = ""
 
         # Phase cap warning
-        cap = PHASE_CAPS.get(self.current_phase, 999)
+        caps = self._get_phase_caps()
+        cap = caps.get(self.current_phase, 999)
         phase_used = self.phase_turns.get(self.current_phase, 0)
         phase_remaining = max(0, cap - phase_used)
         if phase_used >= cap:
@@ -253,7 +362,9 @@ class ProgressTracker:
             phase_warning = f"Phase: {self.current_phase.upper()} — {phase_used}/{cap} turns used"
 
         # Token budget warning — trigger at 60%, not 85%
-        if tokens_pct > 85:
+        if effective_budget <= 0:
+            budget_warning = ""
+        elif tokens_pct > 85:
             budget_warning = "⚠️ CRITICAL: Token budget nearly exhausted. Wrap up and write the report NOW."
         elif tokens_pct > 60:
             budget_warning = (
@@ -265,20 +376,56 @@ class ProgressTracker:
         else:
             budget_warning = ""
 
+        # Stuck / Momentum warnings
+        stuck_warning = ""
+        if self.is_stuck:
+            stuck_warning = (
+                "⚠️ LOOP DETECTED: You have repeated the same action 3 times. "
+                "Switch to 'Fast Mode'—stop deep analysis and move to a different application area immediately."
+            )
+        
+        momentum_warning = ""
+        turns_since = self.turn - self._last_finding_turn
+        if turns_since >= 10 and self.current_phase != "report":
+            momentum_warning = (
+                f"⚠️ MOMENTUM LOSS: No new findings in {turns_since} turns. "
+                "Change your strategy, explore a new module, or move to the next phase."
+            )
+
         # Build the context block
         lines = [
             "═══ PROGRESS STATUS ═══",
+            f"Target: {self.target_url or 'Local'} ({self.target_dir})",
             f"Turn: {self.turn}/{self.max_turns} ({turns_remaining} remaining)",
             f"Elapsed: {elapsed_str}",
-            f"Token Budget: ~{self.total_tokens_used:,}/{self.token_budget:,} ({tokens_pct}% used)",
+            f"Token Budget: {self.total_tokens_used:,} used ({tokens_pct_str})",
             f"Tool Calls: {self.tool_calls_made}",
             f"Findings Recorded: {self.findings_count}",
             f"Plan Progress: {checklist_summary}",
+            f"Flow: {self._get_phase_bar()}",
+            f"Health: {self.target_health}",
             f"{phase_warning}",
         ]
 
+        # Architectural Awareness
+        arch = self._get_arch_awareness(run_folder)
+        if arch:
+            lines.append(f"\n{arch}")
+        
+        # Decision Flow
+        if self.decision_history:
+            lines.append("\n### Recent Decision Flow")
+            for d in self.decision_history:
+                lines.append(f"- {d}...")
+
         if budget_warning:
             lines.append(f"\n{budget_warning}")
+        
+        if stuck_warning:
+            lines.append(f"\n{stuck_warning}")
+            
+        if momentum_warning:
+            lines.append(f"\n{momentum_warning}")
 
         if checklist_text:
             lines.append(f"\n### Current Checklist\n{checklist_text}")
@@ -298,9 +445,11 @@ class ProgressTracker:
 
     @property
     def is_phase_capped(self) -> bool:
-        cap = PHASE_CAPS.get(self.current_phase, 999)
+        caps = self._get_phase_caps()
+        cap = caps.get(self.current_phase, 999)
         return self.phase_turns.get(self.current_phase, 0) >= cap
 
     @property
     def is_over_turns(self) -> bool:
         return self.turn >= self.max_turns
+

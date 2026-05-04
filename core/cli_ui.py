@@ -20,6 +20,7 @@ import os
 import re
 import sys
 import time
+from pathlib import Path
 from typing import Optional, Union, List
 
 from rich.console import Console
@@ -210,11 +211,43 @@ class CLIRenderer:
             padding=(0, 1),
         ))
 
-    def show_complete(self, report_path: str = "", auto_open: bool = False) -> None:
-        body = "[bold green]Campaign complete.[/bold green]"
-        if report_path:
-            body += f"\n[dim]Report:[/dim] {report_path}"
-        body += f"\n[dim]Tool calls observed:[/dim] {self._tool_call_count}"
+    def show_complete(self, report_path: str = "", auto_open: bool = False, run_folder: str = "") -> None:
+        body = "[bold green]Campaign complete.[/bold green]\n\n"
+        
+        # Determine the final run folder to build reliable links
+        rf = Path(run_folder or report_path)
+        if rf.is_file():
+            rf = rf.parent
+
+        body += "  [bold]Generated Artifacts:[/bold]\n"
+        
+        # List key reports if they exist
+        reports = [
+            ("Final Findings", "vulnerability_report.md"),
+            ("Activity Log", "live_report.md"),
+            ("Pipeline Log", "pipeline_report.md"),
+            ("API Index", "api_test_data.json"),
+            ("Full Transcript", "transcript.txt"),
+        ]
+        
+        found_any = False
+        for label, filename in reports:
+            p = rf / filename
+            if p.exists():
+                body += f"  - {label:15}: {p}\n"
+                found_any = True
+        
+        if not found_any:
+            body += f"  - Report: {report_path}\n"
+
+        body += f"\n  [dim]Tool calls observed:[/dim] {self._tool_call_count}\n"
+        
+        # Add the resume command
+        if run_folder or report_path:
+            cmd_path = run_folder or report_path
+            body += f"\n  [bold cyan]🔄 Resume Command:[/bold cyan]\n"
+            body += f"  python faultline.py --resume {cmd_path}\n"
+
         self.console.print(Panel(body, border_style="green", padding=(1, 2)))
         # Terminal bell — notify operator that campaign is done
         sys.stdout.write("\a")

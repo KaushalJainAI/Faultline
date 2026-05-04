@@ -270,15 +270,41 @@ def _auto_fan_chaos_findings(crashes: list, anomaly_report: dict, target_url: st
         # Rolled-up anomaly finding
         n = anomaly_report.get("anomaly_count", 0)
         if n > 0:
-            _lr.append_finding_sync({
-                "title": f"[AUTO] {n} anomalous response(s) during chaos campaign",
-                "category": "security_candidate",
-                "severity": "medium",
-                "summary": anomaly_report.get("summary", f"{n} anomalies detected"),
-                "evidence": json.dumps(anomaly_report.get("anomalies", [])[:5], indent=2)[:600],
-                "vision_step": 4,
-                "auto": True,
-            })
+            anomalies = anomaly_report.get("anomalies", [])
+            rate_limit_hits = [a for a in anomalies if any(ann.get("type") == "rate_limit_hit" for ann in a.get("anomalies", []))]
+            
+            if rate_limit_hits:
+                _lr.append_finding_sync({
+                    "title": f"[AUTO] Campaign Throttled: {len(rate_limit_hits)} Rate Limit Hit(s) (HTTP 429)",
+                    "category": "api",
+                    "severity": "medium",
+                    "summary": f"The chaos campaign hit server-side rate limits {len(rate_limit_hits)} times. This indicates the target's DoS protections are active but may prevent exhaustive testing.",
+                    "evidence": f"First 3 endpoints throttled:\n" + "\n".join([f"- {h.get('endpoint')}" for h in rate_limit_hits[:3]]),
+                    "vision_step": 4,
+                    "auto": True,
+                })
+                # Remove them from the general count to avoid double-reporting if they are the only anomalies
+                other_anomalies = [a for a in anomalies if not any(ann.get("type") == "rate_limit_hit" for ann in a.get("anomalies", []))]
+                if other_anomalies:
+                    _lr.append_finding_sync({
+                        "title": f"[AUTO] {len(other_anomalies)} other anomalous response(s) during chaos campaign",
+                        "category": "security_candidate",
+                        "severity": "medium",
+                        "summary": f"{len(other_anomalies)} non-throttled anomalies detected",
+                        "evidence": json.dumps(other_anomalies[:5], indent=2)[:600],
+                        "vision_step": 4,
+                        "auto": True,
+                    })
+            else:
+                _lr.append_finding_sync({
+                    "title": f"[AUTO] {n} anomalous response(s) during chaos campaign",
+                    "category": "security_candidate",
+                    "severity": "medium",
+                    "summary": anomaly_report.get("summary", f"{n} anomalies detected"),
+                    "evidence": json.dumps(anomalies[:5], indent=2)[:600],
+                    "vision_step": 4,
+                    "auto": True,
+                })
     except Exception as _e:
         logger.debug("_auto_fan_chaos_findings error: %s", _e)
 
@@ -575,6 +601,13 @@ _BOILERPLATE_ALIASES = {
     "load": "load_test_boilerplate.py",
     "e2e_journey": "e2e_user_journey_test_boilerplate.py",
     "e2e_react": "e2e_react_ui_test_boilerplate.py",
+    # Multi-endpoint sweep — tests 5-10 endpoints per file (preferred for coverage)
+    "endpoint_sweep": "api_endpoint_sweep_boilerplate.py",
+    "sweep": "api_endpoint_sweep_boilerplate.py",
+    # Security-specific boilerplates
+    "security_jwt": "security_jwt_test_boilerplate.py",
+    "security_cors": "security_cors_test_boilerplate.py",
+    "security_headers": "security_headers_test_boilerplate.py",
 }
 
 _BOILERPLATE_DIR = Path(__file__).resolve().parent.parent / "agent_assets" / "test_boilerplates"
@@ -1848,6 +1881,394 @@ def fetch_endpoint_bundle(target_dir: str, run_folder: str = "") -> str:
         return f"Error in fetch_endpoint_bundle: {e}"
 
 
+# ---------------------------------------------------------------------------
+# Security campaign auto-fan + tools
+# ---------------------------------------------------------------------------
+
+def _auto_fan_security_findings(
+    results: list,
+    campaign_type: str,
+    target_url: str,
+    payloads: list = None,
+) -> int:
+    """
+    Classify security campaign results and auto-write findings to live_report.
+    Returns the count of findings written.
+    """
+    try:
+        from core.context import live_report_var
+        _lr = live_report_var.get(None)
+        if _lr is None:
+            return 0
+
+        from skills.security_payloads import OWASP_MAP
+        _REQUIRED_HEADERS = [
+            "Content-Security-Policy", "Strict-Transport-Security",
+            "X-Frame-Options", "X-Content-Type-Options", "Referrer-Policy",
+        ]
+        owasp = OWASP_MAP.get(campaign_type, "")
+        count = 0
+
+        for r in results:
+            status = r.get("status_code")
+            endpoint = r.get("endpoint", "")
+            payload = r.get("payload", {})
+            response_text = r.get("response_text", "") or ""
+            attack_type = (payload or {}).get("_attack_type", campaign_type)
+
+            if campaign_type == "idor_sweep":
+                if status == 200:
+                    _lr.append_finding_sync({
+                        "title": f"[AUTO] Potential IDOR at {endpoint}",
+                        "category": "security_candidate",
+                        "severity": "high",
+                        "summary": (
+                            f"GET {endpoint} returned 200 with an alternate user's token. "
+                            "Object-level authorization may not be enforced."
+                        ),
+                        "evidence": response_text[:400],
+                        "reproduction_steps": f"Request: {json.dumps(payload)[:200]}",
+                        "vision_step": 4, "auto": True,
+                    })
+                    count += 1
+
+            elif campaign_type == "cors_probe":
+                # Check for reflected evil origin in response headers (stored in response_text)
+                evil_origin = "evil-attacker.com"
+                if evil_origin in response_text and "Access-Control" in response_text:
+                    _lr.append_finding_sync({
+                        "title": f"[AUTO] CORS misconfiguration at {endpoint}",
+                        "category": "security_candidate",
+                        "severity": "high",
+                        "summary": (
+                            f"Response at {endpoint} reflected the evil Origin header. "
+                            "Check Access-Control-Allow-Credentials: true + reflected origin."
+                        ),
+                        "evidence": response_text[:400],
+                        "vision_step": 4, "auto": True,
+                    })
+                    count += 1
+
+            elif campaign_type == "header_audit":
+                missing = [h for h in _REQUIRED_HEADERS if h.lower() not in response_text.lower()]
+                for h in missing:
+                    _lr.append_finding_sync({
+                        "title": f"[AUTO] Missing security header: {h} at {endpoint}",
+                        "category": "security_candidate",
+                        "severity": "medium",
+                        "summary": f"Response from {endpoint} is missing the {h} header.",
+                        "evidence": f"Response headers snippet: {response_text[:300]}",
+                        "suggested_fix": f"Add {h} to Django's SECURE_* settings or middleware.",
+                        "vision_step": 4, "auto": True,
+                    })
+                    count += 1
+
+            elif campaign_type == "jwt_attacks":
+                if status == 200:
+                    variant = (payload or {}).get("_jwt_variant", "unknown")
+                    _lr.append_finding_sync({
+                        "title": f"[AUTO] JWT auth bypass ({variant}) at {endpoint}",
+                        "category": "security_candidate",
+                        "severity": "critical",
+                        "summary": (
+                            f"Endpoint {endpoint} returned 200 with a {variant} token. "
+                            "JWT validation may be absent or bypassable."
+                        ),
+                        "evidence": response_text[:400],
+                        "vision_step": 4, "auto": True,
+                    })
+                    count += 1
+
+            elif campaign_type == "verb_tamper":
+                if status in (200, 201):
+                    advertised = (payload or {}).get("_advertised_methods", [])
+                    _lr.append_finding_sync({
+                        "title": f"[AUTO] Unexpected {r.get('method','?')} accepted at {endpoint}",
+                        "category": "security_candidate",
+                        "severity": "medium",
+                        "summary": (
+                            f"Endpoint {endpoint} accepted HTTP method {r.get('method')} "
+                            f"which is not in its advertised methods {advertised}."
+                        ),
+                        "evidence": response_text[:300],
+                        "vision_step": 4, "auto": True,
+                    })
+                    count += 1
+
+            elif campaign_type == "injection_probe":
+                # SSTI detection: 49 = 7*7
+                if status == 500 or "49" in response_text or "traceback" in response_text.lower():
+                    sev = "critical" if "traceback" in response_text.lower() else "high"
+                    _lr.append_finding_sync({
+                        "title": f"[AUTO] Possible injection at {endpoint}",
+                        "category": "security_candidate",
+                        "severity": sev,
+                        "summary": (
+                            f"Injection payload caused HTTP {status} or reflected output at {endpoint}. "
+                            "Potential SQLi, SSTI, or command injection."
+                        ),
+                        "evidence": response_text[:400],
+                        "reproduction_steps": f"Payload: {json.dumps(payload)[:300]}",
+                        "vision_step": 4, "auto": True,
+                    })
+                    count += 1
+
+            elif campaign_type == "mass_assignment":
+                if status in (200, 201) and any(
+                    f in response_text for f in ("is_staff", "is_admin", "is_superuser", "admin")
+                ):
+                    _lr.append_finding_sync({
+                        "title": f"[AUTO] Mass assignment accepted at {endpoint}",
+                        "category": "security_candidate",
+                        "severity": "high",
+                        "summary": (
+                            f"Endpoint {endpoint} returned 200/201 with privilege fields in the payload. "
+                            "Check if is_staff/is_admin persisted."
+                        ),
+                        "evidence": response_text[:400],
+                        "vision_step": 4, "auto": True,
+                    })
+                    count += 1
+
+            elif campaign_type == "rate_limit_probe":
+                if status == 429:
+                    return count  # rate limiting is working — no finding needed
+
+        # If rate_limit_probe ran with no 429 at all, that's the finding
+        if campaign_type == "rate_limit_probe" and count == 0 and results:
+            statuses = [r.get("status_code") for r in results]
+            if 429 not in statuses:
+                _lr.append_finding_sync({
+                    "title": "[AUTO] No rate limiting detected on login endpoint",
+                    "category": "security_candidate",
+                    "severity": "high",
+                    "summary": (
+                        f"Sent {len(results)} requests to the login endpoint with no 429 response. "
+                        "Brute-force attacks are not rate-limited."
+                    ),
+                    "evidence": f"Status codes seen: {sorted(set(statuses))}",
+                    "suggested_fix": "Add Django REST Framework throttling: DEFAULT_THROTTLE_CLASSES + DEFAULT_THROTTLE_RATES.",
+                    "vision_step": 4, "auto": True,
+                })
+                count += 1
+
+        return count
+    except Exception as _e:
+        logger.debug("_auto_fan_security_findings error: %s", _e)
+        return 0
+
+
+@tool
+async def execute_security_campaign(
+    campaign_type: str,
+    target_url: str,
+    log_file: str,
+    endpoint_map_json: str = "[]",
+    auth_token: str = "",
+    alt_token: str = "",
+    run_folder: str = "",
+) -> str:
+    """
+    Runs one of 8 named HTTP security campaigns against the target.
+    Each campaign maps to an OWASP API Security Top 10 (2023) risk.
+
+    campaign_type — one of:
+      idor_sweep       (API1:2023) — iterate IDs with alternate token
+      jwt_attacks      (API2:2023) — alg:none, expired, malformed JWT
+      mass_assignment  (API3:2023) — inject is_staff/is_admin in POST bodies
+      rate_limit_probe (API4:2023) — 60 rapid login requests
+      verb_tamper      (API5:2023) — send unadvertised HTTP verbs
+      cors_probe       (API7:2023) — evil Origin header probe
+      header_audit     (API7:2023) — check for missing security headers
+      injection_probe  (API8:2023) — SQLi, SSTI, cmdi, path traversal
+
+    endpoint_map_json: JSON string of [{path, methods, fields?}] from endpoint_map.json
+    auth_token: primary user bearer token
+    alt_token: second user token (required for idor_sweep)
+    run_folder: per-run output directory (for logging)
+    """
+    from skills.security_payloads import (
+        ALL_CAMPAIGNS, OWASP_MAP,
+        idor_sweep, cors_probe, header_audit, jwt_attacks,
+        verb_tamper, injection_probe, mass_assignment, rate_limit_probe,
+    )
+    from skills.attacker import SiegeEngine
+    from skills.log_correlator import LogCorrelator
+
+    logger.info("Tool Call: execute_security_campaign(type=%s) against %s", campaign_type, target_url)
+
+    if campaign_type not in ALL_CAMPAIGNS:
+        return json.dumps({
+            "error": f"Unknown campaign_type '{campaign_type}'. Valid: {ALL_CAMPAIGNS}"
+        })
+
+    try:
+        endpoints = json.loads(endpoint_map_json or "[]")
+        if not isinstance(endpoints, list):
+            endpoints = []
+    except json.JSONDecodeError:
+        endpoints = []
+
+    # Generate payloads for the chosen campaign
+    try:
+        if campaign_type == "idor_sweep":
+            payloads = idor_sweep(endpoints, auth_token, alt_token)
+        elif campaign_type == "cors_probe":
+            payloads = cors_probe(endpoints, auth_token)
+        elif campaign_type == "header_audit":
+            payloads = header_audit(endpoints, auth_token)
+        elif campaign_type == "jwt_attacks":
+            auth_eps = [ep.get("path", "") for ep in endpoints if "auth" in ep.get("path", "").lower()]
+            if not auth_eps:
+                auth_eps = [ep.get("path", "") for ep in endpoints]
+            payloads = jwt_attacks(auth_eps, auth_token)
+        elif campaign_type == "verb_tamper":
+            payloads = verb_tamper(endpoints, auth_token)
+        elif campaign_type == "injection_probe":
+            payloads = injection_probe(endpoints, auth_token)
+        elif campaign_type == "mass_assignment":
+            payloads = mass_assignment(endpoints, auth_token)
+        elif campaign_type == "rate_limit_probe":
+            login_url = next(
+                (ep.get("path", "") for ep in endpoints if "login" in ep.get("path", "").lower()),
+                "/api/auth/login/"
+            )
+            payloads = rate_limit_probe(login_url)
+        else:
+            payloads = []
+    except Exception as e:
+        return json.dumps({"error": f"Payload generation failed: {e}"})
+
+    if not payloads:
+        return json.dumps({
+            "campaign_type": campaign_type,
+            "owasp_ref": OWASP_MAP.get(campaign_type, ""),
+            "total_requests": 0,
+            "message": "No endpoints matched this campaign type.",
+        })
+
+    # Run the assault
+    try:
+        from core.context import session_headers_var
+        session_headers = session_headers_var.get({})
+    except Exception:
+        session_headers = {}
+
+    engine = SiegeEngine(target_url, session_headers=session_headers)
+    correlator = LogCorrelator(log_file) if log_file else None
+    if correlator:
+        correlator.start_watching()
+    results = await engine.execute_assault(payloads)
+    if correlator:
+        import asyncio as _asyncio
+        await _asyncio.sleep(1)
+        correlator.stop_watching()
+
+    findings_count = _auto_fan_security_findings(results, campaign_type, target_url, payloads)
+
+    statuses: dict = {}
+    for r in results:
+        sc = str(r.get("status_code", "err"))
+        statuses[sc] = statuses.get(sc, 0) + 1
+
+    return json.dumps({
+        "campaign_type": campaign_type,
+        "owasp_ref": OWASP_MAP.get(campaign_type, ""),
+        "total_requests": len(results),
+        "findings_auto_written": findings_count,
+        "status_distribution": statuses,
+    }, indent=2)
+
+
+@tool
+def audit_file_for_vulnerabilities(
+    file_path: str,
+    target_dir: str,
+    run_folder: str = "",
+) -> str:
+    """
+    Reads a source file and returns it alongside a security review checklist.
+    Call during Discovery on views.py, serializers.py, models.py, settings.py.
+
+    The LLM reviews the returned source and calls record_finding for each issue
+    found. Does NOT run any external tool — the LLM itself is the reviewer.
+
+    file_path: path relative to target_dir (e.g. "app/views.py")
+    target_dir: root of the target project
+    run_folder: per-run output directory (for read-cache dedup)
+
+    Returns JSON: {"file", "source", "security_review_checklist"}
+    """
+    logger.info("Tool Call: audit_file_for_vulnerabilities(%s)", file_path)
+    try:
+        full_path = Path(target_dir) / file_path
+        if not full_path.exists():
+            return json.dumps({"error": f"File not found: {file_path}"})
+
+        # Dedup via read_cache
+        if run_folder:
+            cache = _get_read_cache(run_folder)
+            import hashlib as _hl
+            raw = full_path.read_text(encoding="utf-8", errors="replace")
+            sha = _hl.md5(raw.encode()).hexdigest()[:8]
+            cache_key = f"audit__{file_path.replace(os.sep, '_')}"
+            cached = cache.get(cache_key, {})
+            if cached.get("sha") == sha and cached.get("ref_id"):
+                ref_id = cached["ref_id"]
+                return json.dumps({
+                    "cached": True,
+                    "file": file_path,
+                    "ref_id": ref_id,
+                    "note": f"File unchanged since last audit. Call retrieve_stored_content(run_folder, '{ref_id}') if needed.",
+                })
+        else:
+            raw = full_path.read_text(encoding="utf-8", errors="replace")
+            sha = ""
+
+        # Cap very large files
+        MAX_CHARS = 80_000
+        truncated = len(raw) > MAX_CHARS
+        source = raw[:MAX_CHARS] + ("\n... [TRUNCATED]" if truncated else "")
+
+        checklist = (
+            "You are reviewing the source code above for security vulnerabilities. "
+            "For EACH issue you find, call record_finding with vision_step=2, "
+            "category='security_candidate', and include the exact line number and a suggested fix. "
+            "Check for ALL of the following:\n"
+            "1. Hardcoded secrets, API keys, passwords, or tokens (grep for =, key=, token=, secret=)\n"
+            "2. Missing @permission_classes / @login_required / IsAuthenticated on views\n"
+            "3. Raw SQL via cursor.execute() or QuerySet.raw() with f-strings or % formatting\n"
+            "4. Mass assignment: DRF serializers with sensitive fields (is_staff, password, role) "
+            "   not marked read_only=True\n"
+            "5. DEBUG=True, ALLOWED_HOSTS=['*'], weak SECRET_KEY in settings files\n"
+            "6. eval(), exec(), __import__(), compile() called with user-controlled input\n"
+            "7. File path construction with user input (path traversal risk)\n"
+            "8. Template rendering with unsanitised user content (mark_safe, format_html misuse)\n"
+            "9. Use of pickle, yaml.load (not yaml.safe_load), or other unsafe deserialisers\n"
+            "10. Missing CSRF protection (@csrf_exempt without justification)\n"
+            "Record a finding for every confirmed issue. If the file is clean, record one finding "
+            "with severity='low' and title='Security review: no issues found in <filename>'."
+        )
+
+        result = {"file": file_path, "source": source, "security_review_checklist": checklist}
+
+        # Store in content cache for future dedup
+        if run_folder and sha:
+            try:
+                from core.content_manager import store_and_summarize
+                _, ref_id = store_and_summarize(
+                    json.dumps(result), "audit_file_for_vulnerabilities",
+                    run_folder, 0, source_hint=file_path.replace(os.sep, "_"), turn=-1,
+                )
+                _update_read_cache(run_folder, cache_key, ref_id, "current", sha)
+            except Exception:
+                pass
+
+        return json.dumps(result)
+    except Exception as e:
+        return json.dumps({"error": f"audit_file_for_vulnerabilities failed: {e}"})
+
+
 # Expose tools for the agent to bind
 FAULTLINE_TOOLS = [
     record_finding,
@@ -1866,6 +2287,8 @@ FAULTLINE_TOOLS = [
     copy_test_boilerplate,
     run_functional_test,
     execute_chaos_campaign,
+    execute_security_campaign,
+    audit_file_for_vulnerabilities,
     propose_code_patch,
     save_vulnerability_report,
     execute_claude_code_task,

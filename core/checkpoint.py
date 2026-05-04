@@ -111,6 +111,7 @@ def save_checkpoint(
     session_headers: Optional[Dict] = None,
     active_model: Optional[str] = None,
     active_provider: Optional[str] = None,
+    findings_count: int = 0,
 ) -> str:
     """
     Serialize the full campaign state to <run_folder>/checkpoint.json.
@@ -120,6 +121,7 @@ def save_checkpoint(
         "version": 1,
         "timestamp": datetime.now().isoformat(),
         "turn": turn,
+        "findings_count": findings_count,
         "target_dir": target_dir,
         "target_url": target_url,
         "log_file": log_file,

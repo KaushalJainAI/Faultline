@@ -41,6 +41,7 @@ class ActionType(Enum):
     FINDINGS = "findings"
     MODEL = "model"
     HELP = "help"
+    FINISH = "finish"
 
 
 @dataclass
@@ -119,6 +120,7 @@ def parse_slash_command(raw: str) -> SteeringAction:
             "/r": ActionType.RESUME,
             "/continue": ActionType.RESUME,
             "/c": ActionType.RESUME,
+            "/finish": ActionType.FINISH,
         }
 
         action_type = command_map.get(cmd)
@@ -243,6 +245,7 @@ class InputHandler:
             "  [cyan]/skip[/cyan]            Skip current phase\n"
             "  [cyan]/save[/cyan]            Force-save checkpoint\n"
             "  [cyan]/resume[/cyan]          Continue the campaign\n"
+            "  [cyan]/finish[/cyan]          Stop testing and synthesize report now\n"
             "  [cyan]/quit[/cyan]            Save checkpoint and exit\n"
             "  [cyan]/help[/cyan]            Show this menu\n\n"
             "[dim]Or just type a message to steer the agent.[/dim]\n"
@@ -325,6 +328,7 @@ class InputHandler:
         table.add_row("/skip", "—", "Skip current phase, move to next")
         table.add_row("/save", "—", "Force-save a checkpoint now")
         table.add_row("/resume", "/r, /c", "Continue the campaign")
+        table.add_row("/finish", "—", "Stop testing and synthesize report immediately")
         table.add_row("/quit", "/q", "Save checkpoint and exit gracefully")
         table.add_row("/help", "/h", "Show this help")
         self.console.print(table)

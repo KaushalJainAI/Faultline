@@ -1,0 +1,2522 @@
+[
+  {
+    "path": "/admin",
+    "method": "GET",
+    "file": "workflow_backend\\urls.py",
+    "view": "admin.site.urls",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/auth/google",
+    "method": "GET",
+    "file": "workflow_backend\\urls.py",
+    "view": "GoogleLogin.as_view",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/health",
+    "method": "GET",
+    "file": "workflow_backend\\urls.py",
+    "view": "health_check",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/schema",
+    "method": "GET",
+    "file": "workflow_backend\\urls.py",
+    "view": "SpectacularAPIView.as_view",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/docs",
+    "method": "GET",
+    "file": "workflow_backend\\urls.py",
+    "view": "SpectacularSwaggerView.as_view",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/redoc",
+    "method": "GET",
+    "file": "workflow_backend\\urls.py",
+    "view": "SpectacularRedocView.as_view",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/auth/register",
+    "method": "GET",
+    "file": "core\\urls.py",
+    "view": "UserRegistrationView.as_view",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/auth/login",
+    "method": "GET",
+    "file": "core\\urls.py",
+    "view": "CustomTokenObtainPairView.as_view",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/auth/google",
+    "method": "GET",
+    "file": "core\\urls.py",
+    "view": "GoogleLogin.as_view",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/auth/token/refresh",
+    "method": "GET",
+    "file": "core\\urls.py",
+    "view": "TokenRefreshView.as_view",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/auth/profile",
+    "method": "GET",
+    "file": "core\\urls.py",
+    "view": "UserProfileView.as_view",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/auth/profile/avatar",
+    "method": "GET",
+    "file": "core\\urls.py",
+    "view": "AvatarUploadView.as_view",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/auth/change-password",
+    "method": "GET",
+    "file": "core\\urls.py",
+    "view": "ChangePasswordView.as_view",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/auth/api-keys",
+    "method": "GET",
+    "file": "core\\urls.py",
+    "view": "APIKeyViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/auth/api-keys",
+    "method": "POST",
+    "file": "core\\urls.py",
+    "view": "APIKeyViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/auth/api-keys",
+    "method": "PUT",
+    "file": "core\\urls.py",
+    "view": "APIKeyViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/auth/api-keys",
+    "method": "PATCH",
+    "file": "core\\urls.py",
+    "view": "APIKeyViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/auth/api-keys",
+    "method": "DELETE",
+    "file": "core\\urls.py",
+    "view": "APIKeyViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/auth/api-keys/<int:pk>/rotate",
+    "method": "GET",
+    "file": "core\\urls.py",
+    "view": "APIKeyRotateView.as_view",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/usage",
+    "method": "GET",
+    "file": "core\\urls.py",
+    "view": "UsageTrackingView.as_view",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/usage/insights",
+    "method": "GET",
+    "file": "core\\urls.py",
+    "view": "UsageInsightsView.as_view",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/nodes",
+    "method": "GET",
+    "file": "nodes\\urls.py",
+    "view": "NodeSchemaListView.as_view",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/nodes/categories",
+    "method": "GET",
+    "file": "nodes\\urls.py",
+    "view": "NodeSchemaByCategory.as_view",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/nodes/models",
+    "method": "GET",
+    "file": "nodes\\urls.py",
+    "view": "AIModelListView.as_view",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/nodes/<str:node_type>",
+    "method": "GET",
+    "file": "nodes\\urls.py",
+    "view": "NodeSchemaDetailView.as_view",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/workflows/<int:workflow_id>/compile",
+    "method": "GET",
+    "file": "compiler\\urls.py",
+    "view": "CompileWorkflowView.as_view",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/workflows/<int:workflow_id>/validate",
+    "method": "GET",
+    "file": "compiler\\urls.py",
+    "view": "ValidateWorkflowView.as_view",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/compile/validate",
+    "method": "GET",
+    "file": "compiler\\urls.py",
+    "view": "AdHocValidateWorkflowView.as_view",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/streaming/executions/<uuid:execution_id>/stream",
+    "method": "GET",
+    "file": "streaming\\urls.py",
+    "view": "views.ExecutionStreamView.as_view",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/streaming/executions/<uuid:execution_id>/events",
+    "method": "GET",
+    "file": "streaming\\urls.py",
+    "view": "views.ExecutionEventsHistoryView.as_view",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/streaming/status",
+    "method": "GET",
+    "file": "streaming\\urls.py",
+    "view": "views.StreamConnectionStatusView.as_view",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/streaming/executions/<uuid:execution_id>/test",
+    "method": "GET",
+    "file": "streaming\\urls.py",
+    "view": "views.test_stream_event",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/orchestrator/workflows",
+    "method": "GET",
+    "file": "orchestrator\\urls.py",
+    "view": "views.workflow_list",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/orchestrator/workflows/<int:workflow_id>",
+    "method": "GET",
+    "file": "orchestrator\\urls.py",
+    "view": "views.workflow_detail",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/orchestrator/workflows/<int:workflow_id>/deploy",
+    "method": "GET",
+    "file": "orchestrator\\urls.py",
+    "view": "views.deploy_workflow",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/orchestrator/workflows/<int:workflow_id>/undeploy",
+    "method": "GET",
+    "file": "orchestrator\\urls.py",
+    "view": "views.undeploy_workflow",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/orchestrator/workflows/<int:workflow_id>/versions",
+    "method": "GET",
+    "file": "orchestrator\\urls.py",
+    "view": "views.workflow_versions",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/orchestrator/workflows/<int:workflow_id>/versions/<int:version_id>/restore",
+    "method": "GET",
+    "file": "orchestrator\\urls.py",
+    "view": "views.restore_version",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/orchestrator/workflows/<int:workflow_id>/execute",
+    "method": "GET",
+    "file": "orchestrator\\urls.py",
+    "view": "views.execute_workflow",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/orchestrator/executions/<str:execution_id>/status",
+    "method": "GET",
+    "file": "orchestrator\\urls.py",
+    "view": "views.execution_status",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/orchestrator/executions/<str:execution_id>/pause",
+    "method": "GET",
+    "file": "orchestrator\\urls.py",
+    "view": "views.pause_execution",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/orchestrator/executions/<str:execution_id>/resume",
+    "method": "GET",
+    "file": "orchestrator\\urls.py",
+    "view": "views.resume_execution",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/orchestrator/executions/<str:execution_id>/stop",
+    "method": "GET",
+    "file": "orchestrator\\urls.py",
+    "view": "views.stop_execution",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/orchestrator/hitl/pending",
+    "method": "GET",
+    "file": "orchestrator\\urls.py",
+    "view": "views.pending_hitl_requests",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/orchestrator/hitl/<str:request_id>/respond",
+    "method": "GET",
+    "file": "orchestrator\\urls.py",
+    "view": "views.respond_to_hitl",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/orchestrator/chat",
+    "method": "GET",
+    "file": "orchestrator\\urls.py",
+    "view": "views.conversation_messages",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/orchestrator/chat/<str:conversation_id>",
+    "method": "GET",
+    "file": "orchestrator\\urls.py",
+    "view": "views.conversation_messages",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/orchestrator/chat/<str:conversation_id>/messages/<int:message_id>",
+    "method": "GET",
+    "file": "orchestrator\\urls.py",
+    "view": "views.conversation_messages",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/orchestrator/chat/context-aware",
+    "method": "GET",
+    "file": "orchestrator\\urls.py",
+    "view": "views.context_aware_chat",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/orchestrator/workflows/execute_partial",
+    "method": "GET",
+    "file": "orchestrator\\urls.py",
+    "view": "views.execute_partial",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/orchestrator/workflows/<int:workflow_id>/execute_partial",
+    "method": "GET",
+    "file": "orchestrator\\urls.py",
+    "view": "views.execute_partial",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/orchestrator/ai/generate",
+    "method": "GET",
+    "file": "orchestrator\\urls.py",
+    "view": "views.generate_workflow",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/orchestrator/workflows/<int:workflow_id>/ai/modify",
+    "method": "GET",
+    "file": "orchestrator\\urls.py",
+    "view": "views.modify_workflow",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/orchestrator/workflows/<int:workflow_id>/ai/suggest",
+    "method": "GET",
+    "file": "orchestrator\\urls.py",
+    "view": "views.suggest_improvements",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/orchestrator/background-tasks",
+    "method": "GET",
+    "file": "orchestrator\\urls.py",
+    "view": "views.background_tasks",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/orchestrator/settings/update",
+    "method": "GET",
+    "file": "orchestrator\\urls.py",
+    "view": "views.update_orchestrator_settings",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/orchestrator/system/info",
+    "method": "GET",
+    "file": "orchestrator\\urls.py",
+    "view": "views.system_info",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/orchestrator/executions/<str:execution_id>/thoughts",
+    "method": "GET",
+    "file": "orchestrator\\urls.py",
+    "view": "views.thought_history",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/orchestrator/workflows/<int:workflow_id>/test",
+    "method": "GET",
+    "file": "orchestrator\\urls.py",
+    "view": "views.test_workflow",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/orchestrator/workflows/<int:workflow_id>/clone",
+    "method": "GET",
+    "file": "orchestrator\\urls.py",
+    "view": "views.clone_workflow",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/orchestrator/workflows/<int:workflow_id>/export",
+    "method": "GET",
+    "file": "orchestrator\\urls.py",
+    "view": "export_workflow_zip",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/logs/insights/stats",
+    "method": "GET",
+    "file": "logs\\urls.py",
+    "view": "views.execution_statistics",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/logs/insights/workflow/<int:workflow_id>",
+    "method": "GET",
+    "file": "logs\\urls.py",
+    "view": "views.workflow_metrics",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/logs/insights/costs",
+    "method": "GET",
+    "file": "logs\\urls.py",
+    "view": "views.cost_breakdown",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/logs/audit",
+    "method": "GET",
+    "file": "logs\\urls.py",
+    "view": "views.audit_list",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/logs/audit/export",
+    "method": "GET",
+    "file": "logs\\urls.py",
+    "view": "views.audit_export",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/logs/executions",
+    "method": "GET",
+    "file": "logs\\urls.py",
+    "view": "views.execution_list",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/logs/executions/<str:execution_id>",
+    "method": "GET",
+    "file": "logs\\urls.py",
+    "view": "views.execution_detail",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/logs/executions/<str:execution_id>/activities",
+    "method": "GET",
+    "file": "logs\\urls.py",
+    "view": "views.execution_activity_logs",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/logs/executions/<str:execution_id>/narrative",
+    "method": "GET",
+    "file": "logs\\urls.py",
+    "view": "views.execution_narrative",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/inference/kbs",
+    "method": "GET",
+    "file": "inference\\urls.py",
+    "view": "views.kb_list",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/inference/kbs/<int:kb_id>",
+    "method": "GET",
+    "file": "inference\\urls.py",
+    "view": "views.kb_detail",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/inference/kbs/<int:kb_id>/documents/<int:document_id>/assign",
+    "method": "GET",
+    "file": "inference\\urls.py",
+    "view": "views.kb_assign_document",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/inference/kbs/<int:kb_id>/documents/<int:document_id>",
+    "method": "GET",
+    "file": "inference\\urls.py",
+    "view": "views.kb_remove_document",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/inference/documents",
+    "method": "GET",
+    "file": "inference\\urls.py",
+    "view": "views.document_list",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/inference/documents/<int:document_id>",
+    "method": "GET",
+    "file": "inference\\urls.py",
+    "view": "views.document_detail",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/inference/documents/<int:document_id>/share",
+    "method": "GET",
+    "file": "inference\\urls.py",
+    "view": "views.document_share",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/inference/documents/<int:document_id>/download",
+    "method": "GET",
+    "file": "inference\\urls.py",
+    "view": "views.document_download",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/inference/rag/search",
+    "method": "GET",
+    "file": "inference\\urls.py",
+    "view": "views.rag_search",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/inference/rag/query",
+    "method": "GET",
+    "file": "inference\\urls.py",
+    "view": "views.rag_query",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/credentials/types",
+    "method": "GET",
+    "file": "credentials\\urls.py",
+    "view": "views.CredentialTypeViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/credentials/types",
+    "method": "POST",
+    "file": "credentials\\urls.py",
+    "view": "views.CredentialTypeViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/credentials/types",
+    "method": "PUT",
+    "file": "credentials\\urls.py",
+    "view": "views.CredentialTypeViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/credentials/types",
+    "method": "PATCH",
+    "file": "credentials\\urls.py",
+    "view": "views.CredentialTypeViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/credentials/types",
+    "method": "DELETE",
+    "file": "credentials\\urls.py",
+    "view": "views.CredentialTypeViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/credentials",
+    "method": "GET",
+    "file": "credentials\\urls.py",
+    "view": "views.CredentialViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/credentials",
+    "method": "POST",
+    "file": "credentials\\urls.py",
+    "view": "views.CredentialViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/credentials",
+    "method": "PUT",
+    "file": "credentials\\urls.py",
+    "view": "views.CredentialViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/credentials",
+    "method": "PATCH",
+    "file": "credentials\\urls.py",
+    "view": "views.CredentialViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/credentials",
+    "method": "DELETE",
+    "file": "credentials\\urls.py",
+    "view": "views.CredentialViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/credentials/oauth/google",
+    "method": "GET",
+    "file": "credentials\\urls.py",
+    "view": "views.GoogleCredentialOAuthViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/credentials/oauth/google",
+    "method": "POST",
+    "file": "credentials\\urls.py",
+    "view": "views.GoogleCredentialOAuthViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/credentials/oauth/google",
+    "method": "PUT",
+    "file": "credentials\\urls.py",
+    "view": "views.GoogleCredentialOAuthViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/credentials/oauth/google",
+    "method": "PATCH",
+    "file": "credentials\\urls.py",
+    "view": "views.GoogleCredentialOAuthViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/credentials/oauth/google",
+    "method": "DELETE",
+    "file": "credentials\\urls.py",
+    "view": "views.GoogleCredentialOAuthViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/credentials/logs",
+    "method": "GET",
+    "file": "credentials\\urls.py",
+    "view": "views.CredentialAuditLogViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/credentials/logs",
+    "method": "POST",
+    "file": "credentials\\urls.py",
+    "view": "views.CredentialAuditLogViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/credentials/logs",
+    "method": "PUT",
+    "file": "credentials\\urls.py",
+    "view": "views.CredentialAuditLogViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/credentials/logs",
+    "method": "PATCH",
+    "file": "credentials\\urls.py",
+    "view": "views.CredentialAuditLogViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/credentials/logs",
+    "method": "DELETE",
+    "file": "credentials\\urls.py",
+    "view": "views.CredentialAuditLogViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/orchestrator/templates/",
+    "method": "GET",
+    "file": "templates\\urls.py",
+    "view": "views.template_list",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/orchestrator/templates/<int:pk>",
+    "method": "GET",
+    "file": "templates\\urls.py",
+    "view": "views.template_detail",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/orchestrator/templates/search",
+    "method": "GET",
+    "file": "templates\\urls.py",
+    "view": "views.template_search",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/orchestrator/templates/publish/<int:workflow_id>",
+    "method": "GET",
+    "file": "templates\\urls.py",
+    "view": "views.create_from_workflow",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/orchestrator/templates/<int:pk>/rate",
+    "method": "GET",
+    "file": "templates\\urls.py",
+    "view": "views.rate_template",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/orchestrator/templates/<int:pk>/ratings",
+    "method": "GET",
+    "file": "templates\\urls.py",
+    "view": "views.template_ratings",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/orchestrator/templates/<int:pk>/bookmark",
+    "method": "GET",
+    "file": "templates\\urls.py",
+    "view": "views.bookmark_template",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/orchestrator/templates/<int:pk>/comments",
+    "method": "GET",
+    "file": "templates\\urls.py",
+    "view": "views.template_comments",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/orchestrator/templates/<int:pk>/similar",
+    "method": "GET",
+    "file": "templates\\urls.py",
+    "view": "views.similar_templates",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/webhooks/<int:user_id>/<path:webhook_path>",
+    "method": "GET",
+    "file": "workflow_backend\\urls.py",
+    "view": "receive_webhook",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/mcp/servers",
+    "method": "GET",
+    "file": "mcp_integration\\urls.py",
+    "view": "MCPServerViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/mcp/servers",
+    "method": "POST",
+    "file": "mcp_integration\\urls.py",
+    "view": "MCPServerViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/mcp/servers",
+    "method": "PUT",
+    "file": "mcp_integration\\urls.py",
+    "view": "MCPServerViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/mcp/servers",
+    "method": "PATCH",
+    "file": "mcp_integration\\urls.py",
+    "view": "MCPServerViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/mcp/servers",
+    "method": "DELETE",
+    "file": "mcp_integration\\urls.py",
+    "view": "MCPServerViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/skills",
+    "method": "GET",
+    "file": "skills\\urls.py",
+    "view": "SkillViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/skills",
+    "method": "POST",
+    "file": "skills\\urls.py",
+    "view": "SkillViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/skills",
+    "method": "PUT",
+    "file": "skills\\urls.py",
+    "view": "SkillViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/skills",
+    "method": "PATCH",
+    "file": "skills\\urls.py",
+    "view": "SkillViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/skills",
+    "method": "DELETE",
+    "file": "skills\\urls.py",
+    "view": "SkillViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/chat/sessions",
+    "method": "GET",
+    "file": "chat\\urls.py",
+    "view": "ChatSessionViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/chat/sessions",
+    "method": "POST",
+    "file": "chat\\urls.py",
+    "view": "ChatSessionViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/chat/sessions",
+    "method": "PUT",
+    "file": "chat\\urls.py",
+    "view": "ChatSessionViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/chat/sessions",
+    "method": "PATCH",
+    "file": "chat\\urls.py",
+    "view": "ChatSessionViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/chat/sessions",
+    "method": "DELETE",
+    "file": "chat\\urls.py",
+    "view": "ChatSessionViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/chat/execute-tool",
+    "method": "GET",
+    "file": "chat\\urls.py",
+    "view": "execute_tool_view",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/chat/sessions/<str:session_id>/message",
+    "method": "GET",
+    "file": "chat\\urls.py",
+    "view": "send_message",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/chat/sessions/<str:session_id>/message/stream",
+    "method": "GET",
+    "file": "chat\\urls.py",
+    "view": "send_message_stream",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/chat/sessions/<str:session_id>/messages/<int:message_id>",
+    "method": "GET",
+    "file": "chat\\urls.py",
+    "view": "delete_message",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/chat/sessions/<str:session_id>/upload",
+    "method": "GET",
+    "file": "chat\\urls.py",
+    "view": "upload_file",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/chat/sessions/<str:session_id>/run-workflow",
+    "method": "GET",
+    "file": "chat\\urls.py",
+    "view": "run_workflow_from_chat",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/buddy/context",
+    "method": "GET",
+    "file": "buddy\\urls.py",
+    "view": "views.process_context",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/buddy/action",
+    "method": "GET",
+    "file": "buddy\\urls.py",
+    "view": "views.trigger_action",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/buddy/commands",
+    "method": "GET",
+    "file": "buddy\\urls.py",
+    "view": "views.trigger_action",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/browseros/workspaces",
+    "method": "GET",
+    "file": "browserOS\\urls.py",
+    "view": "OSWorkspaceViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/browseros/workspaces",
+    "method": "POST",
+    "file": "browserOS\\urls.py",
+    "view": "OSWorkspaceViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/browseros/workspaces",
+    "method": "PUT",
+    "file": "browserOS\\urls.py",
+    "view": "OSWorkspaceViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/browseros/workspaces",
+    "method": "PATCH",
+    "file": "browserOS\\urls.py",
+    "view": "OSWorkspaceViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/browseros/workspaces",
+    "method": "DELETE",
+    "file": "browserOS\\urls.py",
+    "view": "OSWorkspaceViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/browseros/windows",
+    "method": "GET",
+    "file": "browserOS\\urls.py",
+    "view": "OSAppWindowViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/browseros/windows",
+    "method": "POST",
+    "file": "browserOS\\urls.py",
+    "view": "OSAppWindowViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/browseros/windows",
+    "method": "PUT",
+    "file": "browserOS\\urls.py",
+    "view": "OSAppWindowViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/browseros/windows",
+    "method": "PATCH",
+    "file": "browserOS\\urls.py",
+    "view": "OSAppWindowViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/browseros/windows",
+    "method": "DELETE",
+    "file": "browserOS\\urls.py",
+    "view": "OSAppWindowViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/browseros/notifications",
+    "method": "GET",
+    "file": "browserOS\\urls.py",
+    "view": "OSNotificationViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/browseros/notifications",
+    "method": "POST",
+    "file": "browserOS\\urls.py",
+    "view": "OSNotificationViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/browseros/notifications",
+    "method": "PUT",
+    "file": "browserOS\\urls.py",
+    "view": "OSNotificationViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/browseros/notifications",
+    "method": "PATCH",
+    "file": "browserOS\\urls.py",
+    "view": "OSNotificationViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/browseros/notifications",
+    "method": "DELETE",
+    "file": "browserOS\\urls.py",
+    "view": "OSNotificationViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/canvas-agent/command",
+    "method": "GET",
+    "file": "canvas_agent\\urls.py",
+    "view": "views.process_command",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/canvas-agent/node-types",
+    "method": "GET",
+    "file": "canvas_agent\\urls.py",
+    "view": "views.get_node_types",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/notifications",
+    "method": "GET",
+    "file": "notifications\\urls.py",
+    "view": "NotificationViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/notifications",
+    "method": "POST",
+    "file": "notifications\\urls.py",
+    "view": "NotificationViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/notifications",
+    "method": "PUT",
+    "file": "notifications\\urls.py",
+    "view": "NotificationViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/notifications",
+    "method": "PATCH",
+    "file": "notifications\\urls.py",
+    "view": "NotificationViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/notifications",
+    "method": "DELETE",
+    "file": "notifications\\urls.py",
+    "view": "NotificationViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/imagine",
+    "method": "GET",
+    "file": "imagine\\urls.py",
+    "view": "ImagineViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/imagine",
+    "method": "POST",
+    "file": "imagine\\urls.py",
+    "view": "ImagineViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/imagine",
+    "method": "PUT",
+    "file": "imagine\\urls.py",
+    "view": "ImagineViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/imagine",
+    "method": "PATCH",
+    "file": "imagine\\urls.py",
+    "view": "ImagineViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/api/imagine",
+    "method": "DELETE",
+    "file": "imagine\\urls.py",
+    "view": "ImagineViewSet",
+    "is_include": false,
+    "traced": true
+  },
+  {
+    "path": "/workspaces",
+    "method": "GET",
+    "file": "browserOS\\urls.py",
+    "view": "OSWorkspaceViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/workspaces",
+    "method": "POST",
+    "file": "browserOS\\urls.py",
+    "view": "OSWorkspaceViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/workspaces",
+    "method": "PUT",
+    "file": "browserOS\\urls.py",
+    "view": "OSWorkspaceViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/workspaces",
+    "method": "PATCH",
+    "file": "browserOS\\urls.py",
+    "view": "OSWorkspaceViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/workspaces",
+    "method": "DELETE",
+    "file": "browserOS\\urls.py",
+    "view": "OSWorkspaceViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/windows",
+    "method": "GET",
+    "file": "browserOS\\urls.py",
+    "view": "OSAppWindowViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/windows",
+    "method": "POST",
+    "file": "browserOS\\urls.py",
+    "view": "OSAppWindowViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/windows",
+    "method": "PUT",
+    "file": "browserOS\\urls.py",
+    "view": "OSAppWindowViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/windows",
+    "method": "PATCH",
+    "file": "browserOS\\urls.py",
+    "view": "OSAppWindowViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/windows",
+    "method": "DELETE",
+    "file": "browserOS\\urls.py",
+    "view": "OSAppWindowViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/notifications",
+    "method": "GET",
+    "file": "browserOS\\urls.py",
+    "view": "OSNotificationViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/notifications",
+    "method": "POST",
+    "file": "browserOS\\urls.py",
+    "view": "OSNotificationViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/notifications",
+    "method": "PUT",
+    "file": "browserOS\\urls.py",
+    "view": "OSNotificationViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/notifications",
+    "method": "PATCH",
+    "file": "browserOS\\urls.py",
+    "view": "OSNotificationViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/notifications",
+    "method": "DELETE",
+    "file": "browserOS\\urls.py",
+    "view": "OSNotificationViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/context",
+    "method": "GET",
+    "file": "buddy\\urls.py",
+    "view": "views.process_context",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/action",
+    "method": "GET",
+    "file": "buddy\\urls.py",
+    "view": "views.trigger_action",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/commands",
+    "method": "GET",
+    "file": "buddy\\urls.py",
+    "view": "views.trigger_action",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/command",
+    "method": "GET",
+    "file": "canvas_agent\\urls.py",
+    "view": "views.process_command",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/node-types",
+    "method": "GET",
+    "file": "canvas_agent\\urls.py",
+    "view": "views.get_node_types",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/sessions",
+    "method": "GET",
+    "file": "chat\\urls.py",
+    "view": "ChatSessionViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/sessions",
+    "method": "POST",
+    "file": "chat\\urls.py",
+    "view": "ChatSessionViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/sessions",
+    "method": "PUT",
+    "file": "chat\\urls.py",
+    "view": "ChatSessionViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/sessions",
+    "method": "PATCH",
+    "file": "chat\\urls.py",
+    "view": "ChatSessionViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/sessions",
+    "method": "DELETE",
+    "file": "chat\\urls.py",
+    "view": "ChatSessionViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/execute-tool",
+    "method": "GET",
+    "file": "chat\\urls.py",
+    "view": "execute_tool_view",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/sessions/<str:session_id>/message",
+    "method": "GET",
+    "file": "chat\\urls.py",
+    "view": "send_message",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/sessions/<str:session_id>/message/stream",
+    "method": "GET",
+    "file": "chat\\urls.py",
+    "view": "send_message_stream",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/sessions/<str:session_id>/messages/<int:message_id>",
+    "method": "GET",
+    "file": "chat\\urls.py",
+    "view": "delete_message",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/sessions/<str:session_id>/upload",
+    "method": "GET",
+    "file": "chat\\urls.py",
+    "view": "upload_file",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/sessions/<str:session_id>/run-workflow",
+    "method": "GET",
+    "file": "chat\\urls.py",
+    "view": "run_workflow_from_chat",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/workflows/<int:workflow_id>/compile",
+    "method": "GET",
+    "file": "compiler\\urls.py",
+    "view": "CompileWorkflowView.as_view",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/workflows/<int:workflow_id>/validate",
+    "method": "GET",
+    "file": "compiler\\urls.py",
+    "view": "ValidateWorkflowView.as_view",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/compile/validate",
+    "method": "GET",
+    "file": "compiler\\urls.py",
+    "view": "AdHocValidateWorkflowView.as_view",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/api-keys",
+    "method": "GET",
+    "file": "core\\urls.py",
+    "view": "APIKeyViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/api-keys",
+    "method": "POST",
+    "file": "core\\urls.py",
+    "view": "APIKeyViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/api-keys",
+    "method": "PUT",
+    "file": "core\\urls.py",
+    "view": "APIKeyViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/api-keys",
+    "method": "PATCH",
+    "file": "core\\urls.py",
+    "view": "APIKeyViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/api-keys",
+    "method": "DELETE",
+    "file": "core\\urls.py",
+    "view": "APIKeyViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/auth/register",
+    "method": "GET",
+    "file": "core\\urls.py",
+    "view": "UserRegistrationView.as_view",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/auth/login",
+    "method": "GET",
+    "file": "core\\urls.py",
+    "view": "CustomTokenObtainPairView.as_view",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/auth/google",
+    "method": "GET",
+    "file": "core\\urls.py",
+    "view": "GoogleLogin.as_view",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/auth/token/refresh",
+    "method": "GET",
+    "file": "core\\urls.py",
+    "view": "TokenRefreshView.as_view",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/auth/profile",
+    "method": "GET",
+    "file": "core\\urls.py",
+    "view": "UserProfileView.as_view",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/auth/profile/avatar",
+    "method": "GET",
+    "file": "core\\urls.py",
+    "view": "AvatarUploadView.as_view",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/auth/change-password",
+    "method": "GET",
+    "file": "core\\urls.py",
+    "view": "ChangePasswordView.as_view",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/auth/api-keys/<int:pk>/rotate",
+    "method": "GET",
+    "file": "core\\urls.py",
+    "view": "APIKeyRotateView.as_view",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/usage",
+    "method": "GET",
+    "file": "core\\urls.py",
+    "view": "UsageTrackingView.as_view",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/usage/insights",
+    "method": "GET",
+    "file": "core\\urls.py",
+    "view": "UsageInsightsView.as_view",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/types",
+    "method": "GET",
+    "file": "credentials\\urls.py",
+    "view": "views.CredentialTypeViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/types",
+    "method": "POST",
+    "file": "credentials\\urls.py",
+    "view": "views.CredentialTypeViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/types",
+    "method": "PUT",
+    "file": "credentials\\urls.py",
+    "view": "views.CredentialTypeViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/types",
+    "method": "PATCH",
+    "file": "credentials\\urls.py",
+    "view": "views.CredentialTypeViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/types",
+    "method": "DELETE",
+    "file": "credentials\\urls.py",
+    "view": "views.CredentialTypeViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/",
+    "method": "GET",
+    "file": "credentials\\urls.py",
+    "view": "views.CredentialViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/",
+    "method": "POST",
+    "file": "credentials\\urls.py",
+    "view": "views.CredentialViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/",
+    "method": "PUT",
+    "file": "credentials\\urls.py",
+    "view": "views.CredentialViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/",
+    "method": "PATCH",
+    "file": "credentials\\urls.py",
+    "view": "views.CredentialViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/",
+    "method": "DELETE",
+    "file": "credentials\\urls.py",
+    "view": "views.CredentialViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/oauth/google",
+    "method": "GET",
+    "file": "credentials\\urls.py",
+    "view": "views.GoogleCredentialOAuthViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/oauth/google",
+    "method": "POST",
+    "file": "credentials\\urls.py",
+    "view": "views.GoogleCredentialOAuthViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/oauth/google",
+    "method": "PUT",
+    "file": "credentials\\urls.py",
+    "view": "views.GoogleCredentialOAuthViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/oauth/google",
+    "method": "PATCH",
+    "file": "credentials\\urls.py",
+    "view": "views.GoogleCredentialOAuthViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/oauth/google",
+    "method": "DELETE",
+    "file": "credentials\\urls.py",
+    "view": "views.GoogleCredentialOAuthViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/logs",
+    "method": "GET",
+    "file": "credentials\\urls.py",
+    "view": "views.CredentialAuditLogViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/logs",
+    "method": "POST",
+    "file": "credentials\\urls.py",
+    "view": "views.CredentialAuditLogViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/logs",
+    "method": "PUT",
+    "file": "credentials\\urls.py",
+    "view": "views.CredentialAuditLogViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/logs",
+    "method": "PATCH",
+    "file": "credentials\\urls.py",
+    "view": "views.CredentialAuditLogViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/logs",
+    "method": "DELETE",
+    "file": "credentials\\urls.py",
+    "view": "views.CredentialAuditLogViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/",
+    "method": "GET",
+    "file": "imagine\\urls.py",
+    "view": "ImagineViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/",
+    "method": "POST",
+    "file": "imagine\\urls.py",
+    "view": "ImagineViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/",
+    "method": "PUT",
+    "file": "imagine\\urls.py",
+    "view": "ImagineViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/",
+    "method": "PATCH",
+    "file": "imagine\\urls.py",
+    "view": "ImagineViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/",
+    "method": "DELETE",
+    "file": "imagine\\urls.py",
+    "view": "ImagineViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/kbs",
+    "method": "GET",
+    "file": "inference\\urls.py",
+    "view": "views.kb_list",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/kbs/<int:kb_id>",
+    "method": "GET",
+    "file": "inference\\urls.py",
+    "view": "views.kb_detail",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/kbs/<int:kb_id>/documents/<int:document_id>/assign",
+    "method": "GET",
+    "file": "inference\\urls.py",
+    "view": "views.kb_assign_document",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/kbs/<int:kb_id>/documents/<int:document_id>",
+    "method": "GET",
+    "file": "inference\\urls.py",
+    "view": "views.kb_remove_document",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/documents",
+    "method": "GET",
+    "file": "inference\\urls.py",
+    "view": "views.document_list",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/documents/<int:document_id>",
+    "method": "GET",
+    "file": "inference\\urls.py",
+    "view": "views.document_detail",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/documents/<int:document_id>/share",
+    "method": "GET",
+    "file": "inference\\urls.py",
+    "view": "views.document_share",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/documents/<int:document_id>/download",
+    "method": "GET",
+    "file": "inference\\urls.py",
+    "view": "views.document_download",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/rag/search",
+    "method": "GET",
+    "file": "inference\\urls.py",
+    "view": "views.rag_search",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/rag/query",
+    "method": "GET",
+    "file": "inference\\urls.py",
+    "view": "views.rag_query",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/insights/stats",
+    "method": "GET",
+    "file": "logs\\urls.py",
+    "view": "views.execution_statistics",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/insights/workflow/<int:workflow_id>",
+    "method": "GET",
+    "file": "logs\\urls.py",
+    "view": "views.workflow_metrics",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/insights/costs",
+    "method": "GET",
+    "file": "logs\\urls.py",
+    "view": "views.cost_breakdown",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/audit",
+    "method": "GET",
+    "file": "logs\\urls.py",
+    "view": "views.audit_list",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/audit/export",
+    "method": "GET",
+    "file": "logs\\urls.py",
+    "view": "views.audit_export",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/executions",
+    "method": "GET",
+    "file": "logs\\urls.py",
+    "view": "views.execution_list",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/executions/<str:execution_id>",
+    "method": "GET",
+    "file": "logs\\urls.py",
+    "view": "views.execution_detail",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/executions/<str:execution_id>/activities",
+    "method": "GET",
+    "file": "logs\\urls.py",
+    "view": "views.execution_activity_logs",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/executions/<str:execution_id>/narrative",
+    "method": "GET",
+    "file": "logs\\urls.py",
+    "view": "views.execution_narrative",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/servers",
+    "method": "GET",
+    "file": "mcp_integration\\urls.py",
+    "view": "MCPServerViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/servers",
+    "method": "POST",
+    "file": "mcp_integration\\urls.py",
+    "view": "MCPServerViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/servers",
+    "method": "PUT",
+    "file": "mcp_integration\\urls.py",
+    "view": "MCPServerViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/servers",
+    "method": "PATCH",
+    "file": "mcp_integration\\urls.py",
+    "view": "MCPServerViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/servers",
+    "method": "DELETE",
+    "file": "mcp_integration\\urls.py",
+    "view": "MCPServerViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/nodes",
+    "method": "GET",
+    "file": "nodes\\urls.py",
+    "view": "NodeSchemaListView.as_view",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/nodes/categories",
+    "method": "GET",
+    "file": "nodes\\urls.py",
+    "view": "NodeSchemaByCategory.as_view",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/nodes/models",
+    "method": "GET",
+    "file": "nodes\\urls.py",
+    "view": "AIModelListView.as_view",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/nodes/<str:node_type>",
+    "method": "GET",
+    "file": "nodes\\urls.py",
+    "view": "NodeSchemaDetailView.as_view",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/",
+    "method": "GET",
+    "file": "notifications\\urls.py",
+    "view": "NotificationViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/",
+    "method": "POST",
+    "file": "notifications\\urls.py",
+    "view": "NotificationViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/",
+    "method": "PUT",
+    "file": "notifications\\urls.py",
+    "view": "NotificationViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/",
+    "method": "PATCH",
+    "file": "notifications\\urls.py",
+    "view": "NotificationViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/",
+    "method": "DELETE",
+    "file": "notifications\\urls.py",
+    "view": "NotificationViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/workflows",
+    "method": "GET",
+    "file": "orchestrator\\urls.py",
+    "view": "views.workflow_list",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/workflows/<int:workflow_id>",
+    "method": "GET",
+    "file": "orchestrator\\urls.py",
+    "view": "views.workflow_detail",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/workflows/<int:workflow_id>/deploy",
+    "method": "GET",
+    "file": "orchestrator\\urls.py",
+    "view": "views.deploy_workflow",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/workflows/<int:workflow_id>/undeploy",
+    "method": "GET",
+    "file": "orchestrator\\urls.py",
+    "view": "views.undeploy_workflow",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/workflows/<int:workflow_id>/versions",
+    "method": "GET",
+    "file": "orchestrator\\urls.py",
+    "view": "views.workflow_versions",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/workflows/<int:workflow_id>/versions/<int:version_id>/restore",
+    "method": "GET",
+    "file": "orchestrator\\urls.py",
+    "view": "views.restore_version",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/workflows/<int:workflow_id>/execute",
+    "method": "GET",
+    "file": "orchestrator\\urls.py",
+    "view": "views.execute_workflow",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/executions/<str:execution_id>/status",
+    "method": "GET",
+    "file": "orchestrator\\urls.py",
+    "view": "views.execution_status",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/executions/<str:execution_id>/pause",
+    "method": "GET",
+    "file": "orchestrator\\urls.py",
+    "view": "views.pause_execution",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/executions/<str:execution_id>/resume",
+    "method": "GET",
+    "file": "orchestrator\\urls.py",
+    "view": "views.resume_execution",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/executions/<str:execution_id>/stop",
+    "method": "GET",
+    "file": "orchestrator\\urls.py",
+    "view": "views.stop_execution",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/hitl/pending",
+    "method": "GET",
+    "file": "orchestrator\\urls.py",
+    "view": "views.pending_hitl_requests",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/hitl/<str:request_id>/respond",
+    "method": "GET",
+    "file": "orchestrator\\urls.py",
+    "view": "views.respond_to_hitl",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/chat",
+    "method": "GET",
+    "file": "orchestrator\\urls.py",
+    "view": "views.conversation_messages",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/chat/<str:conversation_id>",
+    "method": "GET",
+    "file": "orchestrator\\urls.py",
+    "view": "views.conversation_messages",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/chat/<str:conversation_id>/messages/<int:message_id>",
+    "method": "GET",
+    "file": "orchestrator\\urls.py",
+    "view": "views.conversation_messages",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/chat/context-aware",
+    "method": "GET",
+    "file": "orchestrator\\urls.py",
+    "view": "views.context_aware_chat",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/workflows/execute_partial",
+    "method": "GET",
+    "file": "orchestrator\\urls.py",
+    "view": "views.execute_partial",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/workflows/<int:workflow_id>/execute_partial",
+    "method": "GET",
+    "file": "orchestrator\\urls.py",
+    "view": "views.execute_partial",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/ai/generate",
+    "method": "GET",
+    "file": "orchestrator\\urls.py",
+    "view": "views.generate_workflow",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/workflows/<int:workflow_id>/ai/modify",
+    "method": "GET",
+    "file": "orchestrator\\urls.py",
+    "view": "views.modify_workflow",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/workflows/<int:workflow_id>/ai/suggest",
+    "method": "GET",
+    "file": "orchestrator\\urls.py",
+    "view": "views.suggest_improvements",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/background-tasks",
+    "method": "GET",
+    "file": "orchestrator\\urls.py",
+    "view": "views.background_tasks",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/settings/update",
+    "method": "GET",
+    "file": "orchestrator\\urls.py",
+    "view": "views.update_orchestrator_settings",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/system/info",
+    "method": "GET",
+    "file": "orchestrator\\urls.py",
+    "view": "views.system_info",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/executions/<str:execution_id>/thoughts",
+    "method": "GET",
+    "file": "orchestrator\\urls.py",
+    "view": "views.thought_history",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/workflows/<int:workflow_id>/test",
+    "method": "GET",
+    "file": "orchestrator\\urls.py",
+    "view": "views.test_workflow",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/workflows/<int:workflow_id>/clone",
+    "method": "GET",
+    "file": "orchestrator\\urls.py",
+    "view": "views.clone_workflow",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/workflows/<int:workflow_id>/export",
+    "method": "GET",
+    "file": "orchestrator\\urls.py",
+    "view": "export_workflow_zip",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/skills",
+    "method": "GET",
+    "file": "skills\\urls.py",
+    "view": "SkillViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/skills",
+    "method": "POST",
+    "file": "skills\\urls.py",
+    "view": "SkillViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/skills",
+    "method": "PUT",
+    "file": "skills\\urls.py",
+    "view": "SkillViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/skills",
+    "method": "PATCH",
+    "file": "skills\\urls.py",
+    "view": "SkillViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/skills",
+    "method": "DELETE",
+    "file": "skills\\urls.py",
+    "view": "SkillViewSet",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/executions/<uuid:execution_id>/stream",
+    "method": "GET",
+    "file": "streaming\\urls.py",
+    "view": "views.ExecutionStreamView.as_view",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/executions/<uuid:execution_id>/events",
+    "method": "GET",
+    "file": "streaming\\urls.py",
+    "view": "views.ExecutionEventsHistoryView.as_view",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/status",
+    "method": "GET",
+    "file": "streaming\\urls.py",
+    "view": "views.StreamConnectionStatusView.as_view",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/executions/<uuid:execution_id>/test",
+    "method": "GET",
+    "file": "streaming\\urls.py",
+    "view": "views.test_stream_event",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/",
+    "method": "GET",
+    "file": "templates\\urls.py",
+    "view": "views.template_list",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/<int:pk>",
+    "method": "GET",
+    "file": "templates\\urls.py",
+    "view": "views.template_detail",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/search",
+    "method": "GET",
+    "file": "templates\\urls.py",
+    "view": "views.template_search",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/publish/<int:workflow_id>",
+    "method": "GET",
+    "file": "templates\\urls.py",
+    "view": "views.create_from_workflow",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/<int:pk>/rate",
+    "method": "GET",
+    "file": "templates\\urls.py",
+    "view": "views.rate_template",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/<int:pk>/ratings",
+    "method": "GET",
+    "file": "templates\\urls.py",
+    "view": "views.template_ratings",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/<int:pk>/bookmark",
+    "method": "GET",
+    "file": "templates\\urls.py",
+    "view": "views.bookmark_template",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/<int:pk>/comments",
+    "method": "GET",
+    "file": "templates\\urls.py",
+    "view": "views.template_comments",
+    "is_include": false,
+    "traced": false
+  },
+  {
+    "path": "/<int:pk>/similar",
+    "method": "GET",
+    "file": "templates\\urls.py",
+    "view": "views.similar_templates",
+    "is_include": false,
+    "traced": false
+  }
+]

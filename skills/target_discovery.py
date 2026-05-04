@@ -161,12 +161,34 @@ def save_discovered_schema(
     schema_path = rf / "discovered_openapi_schema.json"
     schema_path.write_text(json.dumps(schema, indent=2), encoding="utf-8")
 
-    # Save flat endpoint list for agent consumption
-    endpoints_path = rf / "discovered_endpoints.json"
-    endpoints_path.write_text(json.dumps(endpoints, indent=2), encoding="utf-8")
+    # Save flat endpoint list for agent consumption (unified endpoint_map.json)
+    endpoints_path = rf / "endpoint_map.json"
+    
+    # Merge with existing if present
+    existing = []
+    if endpoints_path.exists():
+        try:
+            existing = json.loads(endpoints_path.read_text(encoding="utf-8"))
+        except Exception:
+            existing = []
+    
+    # Deduplicate by path + method
+    seen = {(e.get("path"), e.get("method")) for e in existing}
+    merged = list(existing)
+    for ep in endpoints:
+        key = (ep["path"], ep["method"])
+        if key not in seen:
+            merged.append(ep)
+            seen.add(key)
+
+    endpoints_path.write_text(json.dumps(merged, indent=2), encoding="utf-8")
+    
+    # Also save as discovered_endpoints.json for backward compatibility
+    legacy_path = rf / "discovered_endpoints.json"
+    legacy_path.write_text(json.dumps(endpoints, indent=2), encoding="utf-8")
 
     logger.info(
-        "Schema saved: %d endpoints → %s",
+        "Schema saved: %d endpoints merged -> %s",
         len(endpoints), endpoints_path,
     )
     return str(endpoints_path)

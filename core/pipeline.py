@@ -27,7 +27,12 @@ _NEXT_STEPS = {
     "runtime": "Resolve missing imports and dependency conflicts — run `pip install -r requirements.txt` in the target venv.",
     "api": "Investigate API-level issues surfaced by the AST scan before writing functional tests.",
     "semantic": "Address semantic mismatches between documentation intent and implementation.",
-    "security_candidate": "Review security candidates with a human eye before the chaos-testing phase.",
+    "security_candidate": (
+        "Review all security findings. CRITICAL/HIGH issues (CVEs, hardcoded secrets, "
+        "missing auth decorators) must be fixed before production. Run `bandit -r .`, "
+        "`semgrep --config p/django .`, and `pip-audit` locally to reproduce. "
+        "Use propose_code_patch to generate fixes and record_finding to document them."
+    ),
 }
 
 
@@ -137,10 +142,18 @@ class PipelineRunner:
             schema_path.write_text(
                 json.dumps(schemas, indent=2), encoding="utf-8"
             )
+            
+            # Export aggregated endpoints
+            endpoints = structure.get("endpoints", [])
+            endpoint_map_path = self.run_folder / "endpoint_map.json"
+            endpoint_map_path.write_text(
+                json.dumps(endpoints, indent=2), encoding="utf-8"
+            )
+            
             if renderer:
                 renderer.show_pipeline_step(
                     "API Schema Export", "done",
-                    detail=f"{len(schemas)} serializer(s) -> api_schemas.json",
+                    detail=f"{len(schemas)} serializer(s), {len(endpoints)} endpoint(s) -> json"
                 )
 
         semantic = {"status": "skipped"}

@@ -116,6 +116,14 @@ def _classify_anomaly(
             "detail": f"Injection payload accepted with {status} — investigate for actual exploitation",
         })
 
+    # 7. Rate Limiting — 429 Too Many Requests
+    if status == 429:
+        anomalies.append({
+            "type": "rate_limit_hit",
+            "severity": "low",
+            "detail": f"Endpoint {endpoint} returned 429 Too Many Requests — campaign may be throttled",
+        })
+
     if not anomalies:
         return None
 
