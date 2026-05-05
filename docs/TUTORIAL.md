@@ -82,7 +82,7 @@ Once the campaign completes, check the `reports/` directory. Each run creates a 
 
 1.  **`pipeline_report.md`**: View your Production-Readiness Score and static findings.
 2.  **`dependency_graph.py`**: Run `python reports/.../dependency_graph.py` to explore the project structure in 3D.
-3.  **`agent_report.md`**: Review AI-authored vulnerability findings and chaos test results.
+3.  **`vulnerability_report.md`**: Review final vulnerability findings and chaos test results. Older runs may contain `agent_report.md`; new runs use `vulnerability_report.md`.
 4.  **`testcases/`**: Inspect the functional tests the agent generated and ran.
 
 ### Example Finding

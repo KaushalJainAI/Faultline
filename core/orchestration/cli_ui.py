@@ -249,6 +249,8 @@ class CLIRenderer:
         max_tokens: int = 0,
         budget_used_tokens: Optional[int] = None,
         budget_limit_tokens: Optional[int] = None,
+        llm_calls: Optional[int] = None,
+        max_llm_calls: Optional[int] = None,
     ) -> None:
         title = f"Faultline | Turn {turn}/{max_turns} | findings {findings} | history {token_pct}%"
         if elapsed_str:
@@ -279,10 +281,13 @@ class CLIRenderer:
             plan_bar = _bar(0, "dim")
             plan_str = "none"
         elapsed_part = f" | elapsed {elapsed_str}" if elapsed_str else ""
+        llm_part = ""
+        if llm_calls is not None and max_llm_calls is not None:
+            llm_part = f" | LLM [bold]{llm_calls}[/bold]/{max_llm_calls}"
 
         self.console.print(
             f"\n  [dim]+- Campaign Progress --------------------------------------------+[/dim]\n"
-            f"  [dim]|[/dim] Turn [bold]{turn}[/bold]/{max_turns} | Findings [bold]{findings}[/bold]{elapsed_part}\n"
+            f"  [dim]|[/dim] Turn [bold]{turn}[/bold]/{max_turns}{llm_part} | Findings [bold]{findings}[/bold]{elapsed_part}\n"
             f"  [dim]|[/dim] Plan    {plan_bar} {plan_str}\n"
             f"  [dim]|[/dim] Request {ctx_bar} {ctx_str} [dim](compacted prompt)[/dim]\n"
             f"  [dim]|[/dim] History {budget_bar} {budget_str} [dim](stored raw)[/dim]\n"

@@ -16,11 +16,15 @@ The current graph is intentionally simple:
 
 The model receives:
 
-- Target directory.
-- Target base URL.
-- Target log file.
+- Target directory, base URL, log file, run folder, and testcases folder.
 - Session credentials (headers/cookies) injected by the Vault.
-- The system prompt from `core/prompts.py`.
+- The system prompt from `core/intelligence/prompts.py`.
+- A compact progress/status block.
+- The tail of `live_report.md` as the current plan.
+- `memory.md` and `history_index.md` reference ledgers.
+- Recent operator steering and the latest AI/tool cycle.
+
+It does not receive the full raw campaign history every turn. Older messages and large tool outputs are stored on disk and retrieved by reference when needed.
 
 ## Available Tools
 
@@ -99,6 +103,25 @@ To maintain efficiency during long-running campaigns with large codebases, Fault
 
 This hybrid approach ensures the agent remains responsive and cost-effective without losing access to granular technical data when it's needed for final reporting or patch generation.
 
+## Current Context And Budget Behavior
+
+Faultline now stores full history while sending only compact working context to the model:
+
+- Full messages are retained in `checkpoint.json`, session JSONL, `transcript.txt`, and `history_vault/`.
+- Exact archived messages are indexed in `history_index.md` and retrieved with `retrieve_history_message`.
+- Large tool/file outputs are stored in `content_store/`, indexed in `memory.md`, and retrieved with `retrieve_stored_content`.
+- Each model call receives a compact working set from `core.intelligence.content_manager.build_tiered_context`, not the full raw transcript.
+- The terminal progress panel labels this as `Request` for compacted prompt size and `History` for raw stored campaign history.
+
+Faultline reserves the end of the LLM call budget for closure:
+
+- `FAULTLINE_REPORTING_RESERVE_CALLS` controls when exploratory tools are pruned.
+- `FAULTLINE_FINAL_WALKTHROUGH_CALLS` controls the final no-tools walkthrough window.
+- `/wrapup` in the Steering Room forces final synthesis in a few calls.
+- If the LLM budget ends before `vulnerability_report.md` is saved, Faultline writes a factual fallback report from known artifacts.
+
+See [Context Management](CONTEXT_MANAGEMENT.md) and [Operator Commands](OPERATOR_COMMANDS.md).
+
 ## Internal Refactor Notes (May 2026)
 
 The codebase is undergoing a readability-first refactor with a strict "no behavior change" goal.
@@ -106,8 +129,8 @@ The codebase is undergoing a readability-first refactor with a strict "no behavi
 - `core/agent.py` has started moving large inline setup blocks into focused helper methods (live report setup, boilerplate seeding, resume-state reconstruction, transcript writing, progress tracker initialization).
 - Token estimation now uses a shared utility module: `core/token_utils.py`.
 - Module-specific estimation behavior is preserved:
-  - `core/content_manager.py` keeps its conservative context-protection ratio.
-  - `core/progress_tracker.py` keeps its UI/budget-awareness ratio and minimum non-empty token floor.
+  - `core/intelligence/content_manager.py` keeps its conservative context-protection ratio.
+  - `core/intelligence/progress_tracker.py` keeps its UI/budget-awareness ratio and minimum non-empty token floor.
 
 This preserves existing campaign behavior while reducing duplicate logic and making future module splitting safer.
 

@@ -703,6 +703,8 @@ class AegisAgent:
     _AUTO_ABORT_WARNING_S = int(os.environ.get("FAULTLINE_AUTO_ABORT_WARNING", "570")) # 9.5 minutes (red)
     _TOKEN_BUDGET_DEFAULT = int(os.environ.get("FAULTLINE_TOKEN_BUDGET_DEFAULT", "1000000"))
     _TOKEN_BUDGET_HARD_CAP = int(os.environ.get("FAULTLINE_TOKEN_BUDGET_HARD_CAP", "2500000"))
+    _REPORTING_RESERVE_CALLS = int(os.environ.get("FAULTLINE_REPORTING_RESERVE_CALLS", "10"))
+    _FINAL_WALKTHROUGH_CALLS = int(os.environ.get("FAULTLINE_FINAL_WALKTHROUGH_CALLS", "1"))
 
     def __init__(self, budget: Optional[BudgetConfig] = None):
         self._renderer = None
@@ -868,11 +870,89 @@ class AegisAgent:
         return {
             "max_tool_calls": self._budget.max_tool_calls,
             "max_llm_calls": self._budget.max_llm_calls,
+            "llm_calls_used": self._llm_calls_used,
+            "tool_calls_used": self._tool_calls_used,
             "max_rpm": self._budget.max_rpm,
             "max_turns": tracker.max_turns if tracker else "",
             "token_budget": tracker.token_budget if tracker else "",
             "reasoning_level": self._budget.reasoning_level,
+            "request_context_tokens": self._last_context_tokens,
+            "request_context_limit": self._last_context_limit,
         }
+
+    def _build_completion_context(self, run_folder: str, findings_count: int = 0) -> str:
+        """Build a compact, factual end-of-run context block for the final walkthrough."""
+        rf = Path(run_folder) if run_folder else Path("reports")
+        lines = [
+            "FINAL RUN CONTEXT",
+            f"- Run folder: {rf}",
+            f"- Findings recorded in session: {findings_count}",
+            f"- LLM calls used: {self._llm_calls_used}/{self._budget.max_llm_calls}",
+            f"- Tool calls used: {self._tool_calls_used}/{self._budget.max_tool_calls}",
+        ]
+
+        key_files = [
+            "vulnerability_report.md",
+            "live_report.md",
+            "pipeline_report.md",
+            "api_test_data.json",
+            "endpoint_map.json",
+            "generated_tests.json",
+            "findings.jsonl",
+            "agent_flow.md",
+            "transcript.txt",
+        ]
+        for name in key_files:
+            p = rf / name
+            if p.exists():
+                lines.append(f"- Artifact present: {name} ({p.stat().st_size // 1024} KB)")
+            else:
+                lines.append(f"- Artifact missing: {name}")
+
+        test_dir = rf / "testcases"
+        if test_dir.exists():
+            tests = sorted(test_dir.glob("*.py"))
+            lines.append(f"- Test scripts generated: {len(tests)}")
+            for test in tests[:12]:
+                lines.append(f"  - {test.name}")
+            if len(tests) > 12:
+                lines.append(f"  - ... {len(tests) - 12} more")
+
+        try:
+            live_report = rf / "live_report.md"
+            if live_report.exists():
+                tail = _tail_by_token_budget(live_report.read_text(encoding="utf-8", errors="replace"), 1200)
+                lines.append("\nLIVE REPORT TAIL\n" + tail)
+        except Exception:
+            pass
+
+        return "\n".join(lines)
+
+    def _ensure_fallback_report(self, run_folder: str, reason: str) -> None:
+        """Write a factual fallback report if the LLM used its budget before saving one."""
+        if not run_folder:
+            return
+        try:
+            rf = Path(run_folder)
+            report_path = rf / "vulnerability_report.md"
+            if report_path.exists() and report_path.stat().st_size > 0:
+                return
+            rf.mkdir(parents=True, exist_ok=True)
+            report_path.write_text(
+                "# Faultline Campaign Fallback Report\n\n"
+                f"Reason: {reason}\n\n"
+                "The LLM budget ended before a synthesized vulnerability report was saved. "
+                "This fallback report preserves the factual campaign state and artifact list.\n\n"
+                "```text\n"
+                + self._build_completion_context(
+                    run_folder,
+                    getattr(self._tracker, "findings_count", 0) if self._tracker else 0,
+                )
+                + "\n```\n",
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            logger.warning("Failed to write fallback report: %s", exc)
 
     def _apply_session_var(self, key: str, value: str) -> tuple[bool, str]:
         k = (key or "").strip().lower()
@@ -949,14 +1029,28 @@ class AegisAgent:
         # Hard-stop on LLM call budget
         self._llm_calls_used += 1
         if self._llm_calls_used > budget.max_llm_calls:
+            self._ensure_fallback_report(
+                state.get("run_folder", ""),
+                f"LLM call limit reached ({budget.max_llm_calls})",
+            )
+            final_context = self._build_completion_context(
+                state.get("run_folder", ""),
+                getattr(self._tracker, "findings_count", 0) if self._tracker else 0,
+            )
             msg = (
                 f"[Budget Exhausted] LLM call limit reached "
                 f"({budget.max_llm_calls}). Campaign stopped to stay within budget.\n\n"
+                "No more LLM calls are allowed, so this is an automatic factual wrap-up.\n\n"
+                f"{final_context}\n\n"
                 "Tip: re-run with --max-llm-calls N or --reasoning-level fast to get more out of fewer calls."
             )
             if renderer:
                 renderer.show_message(f"  [Budget] LLM call limit hit â€” stopping.", style="bold red")
             return {"messages": [AIMessage(content=msg)]}
+
+        calls_left_including_current = budget.max_llm_calls - self._llm_calls_used + 1
+        final_walkthrough_mode = calls_left_including_current <= self._FINAL_WALKTHROUGH_CALLS
+        reporting_mode = calls_left_including_current <= self._REPORTING_RESERVE_CALLS
 
         cli_provider = get_cli_provider_name()
         if cli_provider:
@@ -1094,34 +1188,72 @@ class AegisAgent:
             ))]}
 
         # â”€â”€ Tool Filtering & Graceful Exit â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        is_critical = self._llm_calls_used >= (budget.max_llm_calls - 5)
-        is_exhausted = self._llm_calls_used >= budget.max_llm_calls
+        is_critical = reporting_mode
 
         active_tools = self._harness.registry.tools()
-        if is_critical:
+        if final_walkthrough_mode:
+            active_tools = []
+            self._ensure_fallback_report(
+                state.get("run_folder", ""),
+                "Final walkthrough call reached before a synthesized report was saved",
+            )
+            final_context = self._build_completion_context(
+                state.get("run_folder", ""),
+                getattr(self._tracker, "findings_count", 0) if self._tracker else 0,
+            )
+            final_prompt = (
+                "\n[SYSTEM] FINAL WALKTHROUGH CALL. This is the last allowed LLM call. "
+                "Do not call tools. Do not start new work. Give the operator a concise walkthrough of what was done, "
+                "what artifacts were produced, how complete the campaign is, what was not completed, and the exact next steps. "
+                "Base the completion estimate on the checklist/progress/artifacts available, not optimism. End with [DONE].\n\n"
+                f"{final_context}"
+            )
+            if not any("FINAL WALKTHROUGH CALL" in str(m.content) for m in state["messages"][-5:]):
+                state["messages"].append(SystemMessage(content=final_prompt))
+        elif is_critical:
             # Prune to only reporting and essential read tools
+            if calls_left_including_current <= self._FINAL_WALKTHROUGH_CALLS + 2:
+                allowed_tool_names = {
+                    "save_vulnerability_report",
+                    "summarize_to_report",
+                    "list_run_folder_files",
+                }
+                critical_action = (
+                    "Only report-saving tools remain. You must call "
+                    "`save_vulnerability_report(report_markdown=..., filename='vulnerability_report.md', run_folder=...)` "
+                    "now if it has not already been saved."
+                )
+            else:
+                allowed_tool_names = {
+                    "record_finding",
+                    "save_vulnerability_report",
+                    "summarize_to_report",
+                    "list_run_folder_files",
+                    "read_run_folder_file",
+                    "record_decision",
+                }
+                critical_action = (
+                    "Reporting and essential read tools remain. Record any final findings, then call "
+                    "`save_vulnerability_report(report_markdown=..., filename='vulnerability_report.md', run_folder=...)`."
+                )
             active_tools = [
                 t for t in self._harness.registry.tools()
-                if (getattr(t, "name", None) or getattr(t, "__name__", "")) in (
-                    "record_finding", "save_vulnerability_report",
-                    "summarize_to_report", "list_run_folder_files",
-                    "read_run_folder_file", "record_decision"
-                )
+                if (getattr(t, "name", None) or getattr(t, "__name__", "")) in allowed_tool_names
             ]
             logger.info("Budget Critical: pruning toolset to reporting-only")
             
             critical_prompt = (
-                "\n[SYSTEM] CRITICAL BUDGET WARNING: You are within 5 turns of the hard turn limit. "
-                "Exploratory tools have been disabled. You MUST now synthesize your final findings, "
-                "ensure all vulnerabilities are recorded with `record_finding`, and call "
-                "`save_vulnerability_report` to generate the final campaign artifact. "
-                "Once the report is saved, end with [DONE]."
+                f"\n[SYSTEM] CRITICAL BUDGET WARNING: {calls_left_including_current} LLM call(s) remain including this one. "
+                "Exploratory tools have been disabled. You MUST now synthesize and close the campaign. "
+                f"{critical_action} "
+                "Use summarize_to_report for progress/walkthrough notes. Do not read broad files. "
+                "When only one call remains, produce the final walkthrough and end with [DONE]."
             )
             # Only inject if not recently warned
             if not any("CRITICAL BUDGET WARNING" in str(m.content) for m in state["messages"][-3:]):
                 state["messages"].append(SystemMessage(content=critical_prompt))
 
-        model_with_tools = llm.bind_tools(active_tools)
+        model_with_tools = llm if final_walkthrough_mode else llm.bind_tools(active_tools)
 
         session_headers = state.get("session_headers", {})
         run_folder = state.get("run_folder", "reports/")
@@ -1685,19 +1817,31 @@ class AegisAgent:
                                 return "Agent phase skipped."
 
                             elif action.type == ActionType.FINISH:
-                                f.write("\n=== OPERATOR ACTION: FINISH ===\n")
+                                f.write("\n=== OPERATOR ACTION: WRAPUP ===\n")
                                 if renderer:
-                                    renderer.show_message("ðŸ Operator requested immediate finish. Forced synthesis engaged.")
+                                    renderer.show_message("Operator requested wrap-up. Final report + walkthrough mode engaged.")
+                                remaining_after_current = 3
+                                self._budget.max_llm_calls = min(
+                                    self._budget.max_llm_calls,
+                                    self._llm_calls_used + remaining_after_current,
+                                )
+                                self._REPORTING_RESERVE_CALLS = max(
+                                    self._REPORTING_RESERVE_CALLS,
+                                    remaining_after_current,
+                                )
+                                self._FINAL_WALKTHROUGH_CALLS = 1
                                 finish_msg = HumanMessage(
                                     content=(
                                         "[SYSTEM] The operator has requested an immediate conclusion. "
-                                        "STOP all testing. Summarize all findings into the final report "
-                                        "now and end with [DONE]."
+                                        "STOP all testing and discovery. You have only a few LLM calls left. "
+                                        "First synthesize completed work and call "
+                                        "`save_vulnerability_report(report_markdown=..., filename='vulnerability_report.md', run_folder=...)`. "
+                                        "Then use the final call for a concise operator walkthrough: what was completed, "
+                                        "what remains incomplete, artifacts generated, and next steps. End with [DONE]."
                                     )
                                 )
                                 accumulated_messages.append(finish_msg)
-                                # Force turn limit to trigger soon
-                                tracker.max_turns = min(tracker.max_turns, iteration + 2)
+                                tracker.max_turns = min(tracker.max_turns, iteration + remaining_after_current)
                                 input_handler.resume_polling()
                                 should_restart = True
                                 break
@@ -2001,6 +2145,8 @@ class AegisAgent:
                                 max_tokens=context_budget,
                                 budget_used_tokens=tracker.total_tokens_used,
                                 budget_limit_tokens=campaign_budget,
+                                llm_calls=self._llm_calls_used,
+                                max_llm_calls=self._budget.max_llm_calls,
                             )
 
                         # Phase cap guardrail â€” force phase transition when cap hit

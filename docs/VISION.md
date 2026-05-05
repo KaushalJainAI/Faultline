@@ -124,7 +124,7 @@ reports/
     pipeline_report.md      ← deterministic findings: syntax, imports, deps, AST roots
     dependency_graph.py     ← interactive 3D dependency visualization (Dash app)
     campaign_agent.log      ← full step-by-step agent reasoning (debug trail)
-    agent_report.md         ← AI-authored vulnerability report (written by the agent)
+    vulnerability_report.md ← final vulnerability report (agent-written or fallback)
     testcases/
       api_test_boilerplate.py   ← automatically deployed at startup
       model_test_boilerplate.py  ← edited in-place by the agent

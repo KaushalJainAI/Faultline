@@ -158,24 +158,36 @@ Modes:
 
 ## Documentation
 
-- [Interactive CLI](docs/CLI.md) - The `faultline.py` interactive agent with HITL prompts and live streaming.
-- [Architecture Guide](docs/ARCHITECTURE.md) - Deep dive into system design and data flow.
-- [Pipeline Vision](docs/VISION.md) - The 7-step architectural roadmap for Faultline.
-- [Tutorial](docs/TUTORIAL.md) - Step-by-step guide to running your first campaign.
-- [Vault Authentication](docs/VAULT.md) - How to configure and use the dynamic authentication system.
-- [Pipeline Mode](docs/PIPELINE.md) - Using the deterministic, non-AI testing pipeline.
-- [LLM Providers](docs/PROVIDERS.md) - Configuring API and local CLI adapters.
-- [MCP Integration](docs/MCP.md) - Using Faultline tools in IDEs like Cursor.
-- [Skills Library](docs/SKILLS.md) - Detailed catalog of testing and analysis tools.
-- [API Guide](docs/API.md) - REST API documentation for the control plane.
-- [Agent Workflow](docs/AGENT.md) - Explanation of the LangGraph execution loop.
-- [Testing Guide](docs/TESTING_GUIDE.md) - Agentic boilerplate testing approach and step-by-step debugging.
-- [Contributing](docs/CONTRIBUTING.md) - How to extend Faultline with new skills.
+Use this README as the binding index for the documentation set:
+
+| Document | Use it for |
+|----------|------------|
+| [Interactive CLI](docs/CLI.md) | Running `faultline.py`, reading terminal progress, HITL prompts, output folders. |
+| [Operator Commands](docs/OPERATOR_COMMANDS.md) | Steering Room commands, especially `/status` and `/wrapup`. |
+| [Context Management](docs/CONTEXT_MANAGEMENT.md) | Request context vs stored history, compaction, memory refs, budget endgame. |
+| [Agent Workflow](docs/AGENT.md) | LangGraph loop, tool orchestration, budget/wrap-up behavior. |
+| [Architecture Guide](docs/ARCHITECTURE.md) | System design and data flow. |
+| [Pipeline Vision](docs/VISION.md) | The 7-step architectural roadmap for Faultline. |
+| [Tutorial](docs/TUTORIAL.md) | Step-by-step guide to running your first campaign. |
+| [Vault Authentication](docs/VAULT.md) | Configuring and using dynamic authentication. |
+| [Pipeline Mode](docs/PIPELINE.md) | Deterministic, non-AI testing pipeline. |
+| [LLM Providers](docs/PROVIDERS.md) | API and local CLI adapter configuration. |
+| [MCP Integration](docs/MCP.md) | Using Faultline tools in IDEs like Cursor. |
+| [Skills Library](docs/SKILLS.md) | Catalog of testing and analysis tools. |
+| [API Guide](docs/API.md) | REST API documentation for the control plane. |
+| [Testing Guide](docs/TESTING_GUIDE.md) | Agentic boilerplate testing and debugging. |
+| [Boilerplates](docs/BOILERPLATES.md) | Test template inventory and copy/edit workflow. |
+| [Dependencies](docs/DEPENDENCIES.md) | Optional test dependencies and setup checks. |
+| [Dry Run Notes](docs/DRY_RUN.md) | Earlier dry-run architecture notes. |
+| [Contributing](docs/CONTRIBUTING.md) | Extending Faultline with new skills or tools. |
 
 ## Current State
 
 Implemented:
 
+- **Operator Steering Room commands** - press `Esc` and use `/status` for a factual progress snapshot or `/wrapup` to force final report + walkthrough within a few calls.
+- **Lossless context storage with compact request windows** - full history is retained in run artifacts while model calls receive compact working context and queryable refs.
+- **Budget-aware endgame** - the agent reserves final calls for report synthesis and a no-tools operator walkthrough; Faultline writes a fallback `vulnerability_report.md` if the LLM budget expires first.
 - Interactive CLI (`faultline.py`) with rich live streaming, HITL credential and permission prompts, and a `request_user_input` tool the agent can call mid-campaign.
 - **Per-run isolated output folder** — every run creates `reports/<project>_<YYYYMMDD>_<HHMMSS>/` so runs are auditable and comparable over time.
 - **Production-readiness score** — deterministic 0–100 score (no LLM text) shown at the top of every pipeline report with severity table and next-steps checklist.

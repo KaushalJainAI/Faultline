@@ -164,7 +164,7 @@ When the agent generates tests:
    - **Step B**: If missing, returns error report with `pip install` command
    - **Step C**: If OK, executes pytest on the test file
 
-4. **Agent reports**: Summarizes findings in `agent_report.md`
+4. **Agent reports**: Summarizes findings in `vulnerability_report.md`
    - If dependencies were missing: "Cannot run auth tests - install: pip install httpx"
    - If test passed: "Auth tests passed: 12/12 passed"
    - If test failed: Shows pytest output with specific failures

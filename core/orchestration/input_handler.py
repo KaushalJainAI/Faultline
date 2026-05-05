@@ -125,6 +125,8 @@ def parse_slash_command(raw: str) -> SteeringAction:
             "/continue": ActionType.RESUME,
             "/c": ActionType.RESUME,
             "/finish": ActionType.FINISH,
+            "/wrapup": ActionType.FINISH,
+            "/wrap": ActionType.FINISH,
             "/vars": ActionType.SHOWVARS,
         }
 
@@ -286,7 +288,8 @@ class InputHandler:
             "  [cyan]/skip[/cyan]            Skip current phase\n"
             "  [cyan]/save[/cyan]            Force-save checkpoint\n"
             "  [cyan]/resume[/cyan]          Continue the campaign\n"
-            "  [cyan]/finish[/cyan]          Stop testing and synthesize report now\n"
+            "  [cyan]/wrapup[/cyan]          Force final report + walkthrough in a few calls\n"
+            "  [cyan]/finish[/cyan]          Alias for /wrapup\n"
             "  [cyan]/quit[/cyan]            Save checkpoint and exit\n"
             "  [cyan]/help[/cyan]            Show this menu\n\n"
             "[dim]Or just type a message to steer the agent.[/dim]\n"
@@ -314,7 +317,7 @@ class InputHandler:
                 continue
 
             if action.type == ActionType.STATUS:
-                self._show_status(turn, findings_count, elapsed_seconds, active_model)
+                self._show_status(turn, findings_count, elapsed_seconds, active_model, session_vars or {})
                 continue
 
             if action.type == ActionType.FINDINGS:
@@ -383,18 +386,34 @@ class InputHandler:
         table.add_row("/skip", "â€”", "Skip current phase, move to next")
         table.add_row("/save", "â€”", "Force-save a checkpoint now")
         table.add_row("/resume", "/r, /c", "Continue the campaign")
-        table.add_row("/finish", "â€”", "Stop testing and synthesize report immediately")
+        table.add_row("/wrapup", "/wrap, /finish", "Stop testing and synthesize final report + walkthrough")
         table.add_row("/quit", "/q", "Save checkpoint and exit gracefully")
         table.add_row("/help", "/h", "Show this help")
         self.console.print(table)
 
-    def _show_status(self, turn: int, findings: int, elapsed: float, model: str) -> None:
+    def _show_status(self, turn: int, findings: int, elapsed: float, model: str, session_vars: Optional[dict] = None) -> None:
         """Print a quick status summary."""
+        vars_ = session_vars or {}
+        llm = ""
+        if vars_.get("llm_calls_used") is not None and vars_.get("max_llm_calls") is not None:
+            llm = f"  LLM Calls: {vars_.get('llm_calls_used')}/{vars_.get('max_llm_calls')}\n"
+        tools = ""
+        if vars_.get("tool_calls_used") is not None and vars_.get("max_tool_calls") is not None:
+            tools = f"  Tool Calls: {vars_.get('tool_calls_used')}/{vars_.get('max_tool_calls')}\n"
+        request = ""
+        if vars_.get("request_context_tokens") is not None and vars_.get("request_context_limit") is not None:
+            request = (
+                f"  Request:  {vars_.get('request_context_tokens')}/"
+                f"{vars_.get('request_context_limit')} compacted tokens\n"
+            )
         self.console.print(
             f"\n  [bold]Campaign Status[/bold]\n"
             f"  Turn:     {turn}\n"
             f"  Findings: {findings}\n"
             f"  Elapsed:  {elapsed:.0f}s\n"
+            f"{llm}"
+            f"{tools}"
+            f"{request}"
             f"  Model:    {model or '(default from .env)'}\n"
         )
 

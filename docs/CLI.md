@@ -1,9 +1,9 @@
-# Faultline Interactive CLI
+﻿# Faultline Interactive CLI
 
 **Date**: 2026-05-01
 **Description**: Comprehensive guide to the `faultline.py` interactive terminal agent, covering modes, live feedback, HITL prompts, and run isolation.
 
-Faultline ships with an interactive command-line agent — `faultline.py` — that runs the full testing pipeline directly in your terminal with live agent reasoning, real-time tool call visibility, and human-in-the-loop (HITL) prompts when the agent needs credentials or permission.
+Faultline ships with an interactive command-line agent â€” `faultline.py` â€” that runs the full testing pipeline directly in your terminal with live agent reasoning, real-time tool call visibility, and human-in-the-loop (HITL) prompts when the agent needs credentials or permission.
 
 It is the recommended way to use Faultline locally. The Django REST control plane remains available for headless / CI use.
 
@@ -95,17 +95,45 @@ Agent phase
 
 The renderer surfaces:
 
-- **Banner** — target dir, URL, mode, and the run folder path
-- **Pipeline steps** — `o` running, `+` done, `x` error, `-` skipped
-- **Agent turn counter** — `[ Agent turn N ]` counter in dim cyan at the start of each LLM iteration.
-- **Live Status & ETA** — real-time spinners (e.g., `o Agent is thinking... (ETA: 42s)`) that update while waiting for LLM or tool responses.
-- **Agent thinking** — dim italic text (truncated at 600 chars with line count).
-- **Tool calls** — `-> tool_name(args summary)` in cyan.
-- **Tool results** — `<- result` in green (truncated at 400 chars).
-- **Phase timing** — elapsed seconds after each phase completes.
-- **Findings** — color-coded panels by severity (CRITICAL red, HIGH orange, MEDIUM yellow, LOW blue)
-- **File generation** — `[+] path/to/file` when reports / patches / tests are written
-- **HITL pauses** — yellow panels announcing the prompt before it blocks
+- **Banner** â€” target dir, URL, mode, and the run folder path
+- **Pipeline steps** â€” `o` running, `+` done, `x` error, `-` skipped
+- **Agent turn counter** â€” `[ Agent turn N ]` counter in dim cyan at the start of each LLM iteration.
+- **Live Status & ETA** â€” real-time spinners (e.g., `o Agent is thinking... (ETA: 42s)`) that update while waiting for LLM or tool responses.
+- **Agent thinking** â€” dim italic text (truncated at 600 chars with line count).
+- **Tool calls** â€” `-> tool_name(args summary)` in cyan.
+- **Tool results** â€” `<- result` in green (truncated at 400 chars).
+- **Phase timing** â€” elapsed seconds after each phase completes.
+- **Findings** â€” color-coded panels by severity (CRITICAL red, HIGH orange, MEDIUM yellow, LOW blue)
+- **File generation** â€” `[+] path/to/file` when reports / patches / tests are written
+- **HITL pauses** â€” yellow panels announcing the prompt before it blocks
+
+---
+
+## Progress Panel
+
+The campaign progress panel separates three counters that used to be easy to confuse:
+
+- `Request`: estimated compacted prompt size for the last/next model request.
+- `History`: raw stored campaign history against the lifetime campaign budget.
+- `LLM`: model calls used against the hard call limit.
+
+Stored history can exceed the per-request context budget because Faultline archives old messages and large tool outputs to disk, then injects compact references into the model prompt.
+
+---
+
+## Steering Room Commands
+
+Press `Esc` during the agent phase to pause and open the Steering Room.
+
+| Command | What it does |
+|---------|--------------|
+| `/status` | Shows current progress, LLM calls, tool calls, compacted request context, findings, elapsed time, and active model. |
+| `/wrapup` | Forces the agent to stop testing and finish with final report plus walkthrough in a few calls. |
+| `/steer <msg>` | Redirects the agent's next action. Raw text also works as steering. |
+| `/save` | Saves a checkpoint immediately. |
+| `/quit` | Saves a checkpoint and exits. |
+
+`/finish` remains available as an alias for `/wrapup`; `/wrap` is a short alias. See [Operator Commands](OPERATOR_COMMANDS.md) for the full list.
 
 ---
 
@@ -135,8 +163,8 @@ Before running `execute_chaos_campaign` (the HTTP attack tool), the CLI pauses a
   Approve this action? [y/n] (n):
 ```
 
-- `y` — proceeds with the attack
-- `n` — vetoes the campaign; the tool returns immediately with `status: "vetoed_by_operator"` and the agent continues with the next step
+- `y` â€” proceeds with the attack
+- `n` â€” vetoes the campaign; the tool returns immediately with `status: "vetoed_by_operator"` and the agent continues with the next step
 
 ### Disabling HITL
 
@@ -173,37 +201,47 @@ Each run creates a unique timestamped folder so runs are isolated and comparable
 
 ```
 reports/
-  <project>_<YYYYMMDD>_<HHMMSS>/     ← shown in banner after startup
-    pipeline_report.md               ← deterministic: syntax, imports, deps, score
-    campaign_agent.log               ← full agent reasoning (debug trail)
-    agent_report.md                  ← AI-authored vulnerability findings
+  <project>_<YYYYMMDD>_<HHMMSS>/     â† shown in banner after startup
+    pipeline_report.md               â† deterministic: syntax, imports, deps, score
+    campaign_agent.log               â† full agent reasoning (debug trail)
+    vulnerability_report.md          <- final AI/fallback vulnerability report
+    live_report.md                   <- operator-facing live status and notes
+    checkpoint.json                  <- resumable full agent state
+    history_index.md                 <- index of archived prior messages
+    history_vault/                   <- archived exact message contents
+    content_store/                   <- archived large tool/file outputs
     testcases/
-    testcases/
-      api_test_boilerplate.py        ← automatically deployed at startup
-      model_test_boilerplate.py       ← edited in-place by the agent
+      api_test_boilerplate.py        â† automatically deployed at startup
+      model_test_boilerplate.py       â† edited in-place by the agent
 ```
 
 | File                              | Contents                                                    |
 |-----------------------------------|-------------------------------------------------------------|
 | `pipeline_report.md`              | Production-readiness score, severity table, findings by category, next steps checklist |
 | `campaign_agent.log`              | Full step-by-step agent reasoning (debug trail for reviewers) |
-| `agent_report.md`                 | AI-authored vulnerability summary (written via `save_vulnerability_report`) |
+| `vulnerability_report.md`         | Final vulnerability summary, written by the agent or fallback closeout |
+| `live_report.md`                  | Current status, plan, progress notes, and synthesis sections |
+| `checkpoint.json`                 | Full resumable state for `python faultline.py --resume <run_folder>` |
+| `history_index.md` / `history_vault/` | Compact index plus exact archived messages |
+| `content_store/` / `memory.md`    | Large tool/file outputs stored by reference |
 | `testcases/*.py`                  | Test scripts copied from boilerplates and edited for this project |
 | `.aegis_patches/<file>`           | Proposed code patches written by `propose_code_patch`        |
 
 The terminal output is a real-time view; the run folder is the durable, auditable record. Re-run Faultline after fixing issues to see the production-readiness score improve.
 
+Current runs use `vulnerability_report.md` as the final report artifact.
+
 ---
 
 ## Troubleshooting
 
-**`Provider not configured`** — Set `OPENROUTER_API_KEY` (or another provider's key) before running, or set `FAULTLINE_PROVIDER=claude_cli` and ensure you are logged into the Claude Code CLI.
+**`Provider not configured`** â€” Set `OPENROUTER_API_KEY` (or another provider's key) before running, or set `FAULTLINE_PROVIDER=claude_cli` and ensure you are logged into the Claude Code CLI.
 
-**`Django setup failed`** — Run `python manage.py migrate` once before the first CLI run so the SQLite DB exists.
+**`Django setup failed`** â€” Run `python manage.py migrate` once before the first CLI run so the SQLite DB exists.
 
-**No colors in Windows `cmd.exe`** — Use Windows Terminal or a modern PowerShell. Rich auto-detects ANSI support.
+**No colors in Windows `cmd.exe`** â€” Use Windows Terminal or a modern PowerShell. Rich auto-detects ANSI support.
 
-**Agent never asks for credentials** — Make the agent's task explicit in `--prompt` (e.g. *"You will likely need a bearer token for /api/auth — call request_user_input when you do."*). Some models default to skipping auth.
+**Agent never asks for credentials** â€” Make the agent's task explicit in `--prompt` (e.g. *"You will likely need a bearer token for /api/auth â€” call request_user_input when you do."*). Some models default to skipping auth.
 
 ---
 
@@ -217,4 +255,5 @@ The terminal output is a real-time view; the run folder is the durable, auditabl
 | Credentials         | Prompted on-demand by agent   | Configured up front via Vault          |
 | Best for            | Local exploration, debugging  | Automation, CI, multi-campaign queues  |
 
-Both paths share the same `AegisAgent`, `PipelineRunner`, and tool set — the CLI is purely additive.
+Both paths share the same `AegisAgent`, `PipelineRunner`, and tool set â€” the CLI is purely additive.
+
