@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+# !/usr/bin/env python3
 """
 Faultline interactive CLI.
 
@@ -58,11 +58,11 @@ for noisy in ("httpx", "urllib3", "asyncio", "watchdog"):
 from rich.console import Console  # noqa: E402
 from rich.prompt import Prompt    # noqa: E402
 
-from core.cli_ui import CLIRenderer           # noqa: E402
+from core.orchestration.cli_ui import CLIRenderer           # noqa: E402
 from core.hitl import enable_hitl, hitl       # noqa: E402
-from core.run_context import make_run_folder  # noqa: E402
-from core.credential_store import init_store  # noqa: E402
-from core.session_store import SessionStore   # noqa: E402
+from core.orchestration.run_context import make_run_folder  # noqa: E402
+from core.providers.credential_store import init_store  # noqa: E402
+from core.orchestration.session_store import SessionStore   # noqa: E402
 
 console = Console()
 
@@ -165,7 +165,7 @@ def parse_args() -> argparse.Namespace:
 
 def validate_provider(target_dir: str, renderer: CLIRenderer) -> bool:
     try:
-        from core.provider_config import get_config_status, get_cli_provider_name
+        from core.providers.provider_config import get_config_status, get_cli_provider_name
         configured, message = get_config_status(target_dir)
         if not configured:
             console.print(f"[bold red]Provider not configured:[/bold red] {message}")
@@ -189,7 +189,7 @@ def run_pipeline(
     run_folder: Path,
     pause_event=None,
 ) -> str:
-    from core.pipeline import PipelineRunner
+    from core.orchestration.pipeline import PipelineRunner
     console.print("\n[bold cyan]Pipeline phase[/bold cyan]")
     renderer.start_phase()
     runner = PipelineRunner(args.target_dir, run_folder=run_folder)
@@ -307,15 +307,15 @@ async def main_async() -> int:
     # Resume flow — load checkpoint and skip straight to agent phase
     # ------------------------------------------------------------------
     if args.resume:
-        from core.checkpoint import load_checkpoint
-        from core.input_handler import InputHandler
+        from core.orchestration.checkpoint import load_checkpoint
+        from core.orchestration.input_handler import InputHandler
 
         resume_path = args.resume
         # Accept both a run folder and a direct checkpoint.json path
         if resume_path.endswith(".json"):
             import json as _json
             data = _json.loads(Path(resume_path).read_text(encoding="utf-8"))
-            from core.checkpoint import deserialize_messages
+            from core.orchestration.checkpoint import deserialize_messages
             data["messages"] = deserialize_messages(data.get("messages", []))
         else:
             data = load_checkpoint(resume_path)
@@ -336,12 +336,12 @@ async def main_async() -> int:
 
         # Restore model override if saved
         if data.get("active_model"):
-            from core.model_registry import set_active_model
+            from core.providers.model_registry import set_active_model
             set_active_model(data["active_model"], data.get("active_provider", "openrouter"))
 
         # Restore session headers
         if data.get("session_headers"):
-            from core.context import session_headers_var
+            from core.orchestration.context import session_headers_var
             session_headers_var.set(data["session_headers"])
 
         renderer.show_banner(
@@ -390,7 +390,7 @@ async def main_async() -> int:
             )
             session_store.finalize_session(status="completed", turn=data.get("turn", 0))
         except KeyboardInterrupt:
-            from core.checkpoint import save_checkpoint
+            from core.orchestration.checkpoint import save_checkpoint
             save_checkpoint(
                 run_folder=str(run_folder),
                 messages=data.get("messages", []),
@@ -419,7 +419,7 @@ async def main_async() -> int:
     cred_store = init_store(args.target_dir, credentials_path=args.credentials)
     if cred_store.loaded:
         from core.tools import resolve_credential_at_startup
-        from core.context import session_headers_var
+        from core.orchestration.context import session_headers_var
         auth_header = resolve_credential_at_startup(cred_store)
         if auth_header:
             session_headers_var.set(auth_header)
@@ -489,7 +489,7 @@ async def main_async() -> int:
         os.environ["FAULTLINE_TARGET_VENV"] = args.target_venv
 
     # Create input handler for Esc key detection
-    from core.input_handler import InputHandler
+    from core.orchestration.input_handler import InputHandler
     input_handler = InputHandler(console=console)
 
     # Start ESC polling BEFORE the pipeline so the operator can halt at any point.
@@ -510,7 +510,7 @@ async def main_async() -> int:
             # ── Pre-flight: health check + API schema discovery ────────────
             if args.target_url:
                 from skills.target_discovery import run_discovery
-                from core.context import session_headers_var
+                from core.orchestration.context import session_headers_var
 
                 renderer.show_pipeline_step("Target Discovery", "running")
                 discovery = run_discovery(
@@ -580,7 +580,7 @@ async def main_async() -> int:
             )
         session_store.finalize_session(status="completed")
     except KeyboardInterrupt:
-        from core.checkpoint import save_checkpoint
+        from core.orchestration.checkpoint import save_checkpoint
         save_checkpoint(
             run_folder=str(run_folder),
             messages=[],
@@ -597,7 +597,7 @@ async def main_async() -> int:
         )
         return 130
     except Exception as exc:
-        from core.pipeline import PipelineAborted
+        from core.orchestration.pipeline import PipelineAborted
         if isinstance(exc, PipelineAborted):
             session_store.finalize_session(status="paused", summary=str(exc))
             console.print(

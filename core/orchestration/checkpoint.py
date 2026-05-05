@@ -36,15 +36,17 @@ _TYPE_MAP = {
 
 def _serialize_message(msg: BaseMessage) -> Dict[str, Any]:
     """Convert a single LangChain message to a JSON-safe dict."""
+    msg_type = "ai" if isinstance(msg, AIMessage) or hasattr(msg, "tool_calls") else msg.type
     data: Dict[str, Any] = {
-        "type": msg.type,
+        "type": msg_type,
         "content": msg.content,
     }
 
-    # AIMessage with tool calls
-    if isinstance(msg, AIMessage):
-        if msg.tool_calls:
-            data["tool_calls"] = msg.tool_calls
+    # AIMessage/AIMessageChunk with tool calls
+    if msg_type == "ai":
+        tool_calls = getattr(msg, "tool_calls", None)
+        if tool_calls:
+            data["tool_calls"] = tool_calls
         if hasattr(msg, "response_metadata") and msg.response_metadata:
             data["response_metadata"] = msg.response_metadata
 
@@ -60,10 +62,11 @@ def _serialize_message(msg: BaseMessage) -> Dict[str, Any]:
 
 def _deserialize_message(data: Dict[str, Any]) -> BaseMessage:
     """Reconstruct a LangChain message from a serialized dict."""
-    msg_type = data.get("type", "human")
+    msg_type = str(data.get("type", "human"))
+    normalized_type = msg_type.lower()
     content = data.get("content", "")
 
-    if msg_type == "ai":
+    if normalized_type in {"ai", "aimessage", "aimessagechunk"}:
         kwargs: Dict[str, Any] = {"content": content}
         if data.get("tool_calls"):
             kwargs["tool_calls"] = data["tool_calls"]
@@ -71,7 +74,7 @@ def _deserialize_message(data: Dict[str, Any]) -> BaseMessage:
             kwargs["response_metadata"] = data["response_metadata"]
         return AIMessage(**kwargs)
 
-    if msg_type == "tool":
+    if normalized_type == "tool":
         return ToolMessage(
             content=content,
             tool_call_id=data.get("tool_call_id", ""),
@@ -79,7 +82,7 @@ def _deserialize_message(data: Dict[str, Any]) -> BaseMessage:
             status=data.get("status", "success"),
         )
 
-    if msg_type == "system":
+    if normalized_type == "system":
         return SystemMessage(content=content)
 
     return HumanMessage(content=content)

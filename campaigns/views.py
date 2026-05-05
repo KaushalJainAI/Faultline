@@ -17,7 +17,7 @@ from campaigns.serializers import (
     ProjectMapRequestSerializer,
 )
 from campaigns.services import run_campaign_pipeline
-from core.provider_config import get_config_status
+from core.providers.provider_config import get_config_status
 from skills.ast_grapher import ASTGrapher
 
 logger = logging.getLogger("CampaignAPI")

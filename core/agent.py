@@ -18,7 +18,7 @@ from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, BaseMessage, ToolMessage
-from core.content_manager import build_tiered_context, estimate_tokens
+from core.intelligence.content_manager import build_tiered_context, estimate_tokens
 
 try:
     from langchain_openai import ChatOpenAI
@@ -35,13 +35,13 @@ try:
 except ImportError:
     ChatGoogleGenerativeAI = None
 
-from core.prompts import SYSTEM_PROMPT, VISION_REMINDER
+from core.intelligence.prompts import SYSTEM_PROMPT, VISION_REMINDER
 from core.tools import FAULTLINE_TOOLS
-from core.cli_provider import ProviderManager
-from core.provider_config import get_cli_provider_name, get_provider
-from core.checkpoint import save_checkpoint, load_checkpoint
-from core.model_registry import get_active_model, set_active_model, find_model
-from core.progress_tracker import ProgressTracker
+from core.providers.cli_provider import ProviderManager
+from core.providers.provider_config import get_cli_provider_name, get_provider
+from core.orchestration.checkpoint import save_checkpoint, load_checkpoint
+from core.providers.model_registry import get_active_model, set_active_model, find_model
+from core.intelligence.progress_tracker import ProgressTracker
 from langchain_core.runnables import RunnableConfig
 from core.harness import HarnessRuntime
 
@@ -115,7 +115,7 @@ class ParallelToolNode(ToolNode):
             # THE GOVERNOR: Batch Context Protection
             # If a parallel result is massive, offload it immediately to prevent turn-crash.
             content = str(result.content) if hasattr(result, "content") else str(result)
-            from core.content_manager import estimate_tokens, store_and_summarize
+            from core.intelligence.content_manager import estimate_tokens, store_and_summarize
             if estimate_tokens(content) > 50000:
                 logger.info(f"Parallel tool '{tool_call['name']}' result too large. Auto-summarizing.")
                 # We need the run_folder from state, but for now we use an empty string
@@ -748,8 +748,8 @@ class AegisAgent:
         self.app = self.workflow.compile()
 
     def _init_live_report(self, run_folder: str, target_dir: str, target_url: str, mode: str):
-        from core.context import live_report_var
-        from core.live_report import LiveReport
+        from core.orchestration.context import live_report_var
+        from core.orchestration.live_report import LiveReport
 
         pipeline_report_path = (
             str(Path(run_folder) / "pipeline_report.md")
@@ -1132,13 +1132,20 @@ class AegisAgent:
 
         # Context limit is fixed to 200k max. We only reduce from that baseline
         # to leave space for output/schema overhead.
-        tool_schema_reserve = int(os.environ.get("FAULTLINE_TOOL_SCHEMA_RESERVE_TOKENS", "12000"))
+        # Provider token accounting includes every bound tool schema. Faultline
+        # has many tools with rich docstrings, so a small fixed reserve lets the
+        # local preflight pass while OpenAI/OpenRouter still rejects the request.
+        configured_schema_reserve = os.environ.get("FAULTLINE_TOOL_SCHEMA_RESERVE_TOKENS")
+        if configured_schema_reserve:
+            tool_schema_reserve = int(configured_schema_reserve)
+        else:
+            tool_schema_reserve = max(80_000, len(active_tools) * 2_500)
         preflight_margin = int(os.environ.get("FAULTLINE_PREFLIGHT_MARGIN_TOKENS", "2048"))
         min_context_floor = int(os.environ.get("FAULTLINE_MIN_CONTEXT_TOKENS", "512"))
         model_context_window: Optional[int] = None
         context_limit = budget.max_input_tokens
         if active_model_value:
-            from core.model_registry import get_model_info
+            from core.providers.model_registry import get_model_info
             minfo = get_model_info(active_model_value)
             if minfo:
                 model_context_window = int(minfo.context_window)
@@ -1514,9 +1521,9 @@ class AegisAgent:
         - Resume from checkpoint (via resumed_messages)
         - Session JSONL logging (via session_store)
         """
-        from core.context import session_headers_var, chaos_vetoed_var
-        from core.cli_ui import extract_file_paths, extract_finding_title, summarize_args
-        from core.input_handler import ActionType
+        from core.orchestration.context import session_headers_var, chaos_vetoed_var
+        from core.orchestration.cli_ui import extract_file_paths, extract_finding_title, summarize_args
+        from core.orchestration.input_handler import ActionType
 
         self._renderer = renderer
         session_headers_var.set(session_headers or {})
@@ -1988,7 +1995,7 @@ class AegisAgent:
                         _phase_cap_key = f'_phase_cap_sent_{tracker.current_phase}'
                         if tracker.is_phase_capped and not getattr(self, _phase_cap_key, False):
                             setattr(self, _phase_cap_key, True)
-                            from core.progress_tracker import PHASE_ORDER
+                            from core.intelligence.progress_tracker import PHASE_ORDER
                             _cur_idx = PHASE_ORDER.index(tracker.current_phase)
                             _next_phase = PHASE_ORDER[min(_cur_idx + 1, len(PHASE_ORDER) - 1)]
                             _cap = tracker._get_phase_caps()[tracker.current_phase]

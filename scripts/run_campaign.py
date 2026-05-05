@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.agent import AegisAgent
-from core.provider_config import get_config_status
+from core.providers.provider_config import get_config_status
 
 load_dotenv()
 

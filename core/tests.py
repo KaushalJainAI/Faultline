@@ -3,11 +3,11 @@ from unittest.mock import patch, MagicMock
 
 from django.test import TestCase
 
-from core.pipeline import PipelineRunner
+from core.orchestration.pipeline import PipelineRunner
 
 class PipelineRunnerTests(TestCase):
-    @patch("core.pipeline.DeterministicChecker")
-    @patch("core.pipeline.analyze_project_structure")
+    @patch("core.orchestration.pipeline.DeterministicChecker")
+    @patch("core.orchestration.pipeline.analyze_project_structure")
     def test_run_pipeline_orchestrates_correctly(self, mock_analyze, mock_checker_cls):
         mock_checker = MagicMock()
         mock_checker.run_all.return_value = {
@@ -28,8 +28,8 @@ class PipelineRunnerTests(TestCase):
             self.assertEqual(report["stages"]["dependency_graph"]["files"], 1)
             self.assertIn("report_path", report)
 
-    @patch("core.pipeline.DeterministicChecker")
-    @patch("core.pipeline.analyze_project_structure")
+    @patch("core.orchestration.pipeline.DeterministicChecker")
+    @patch("core.orchestration.pipeline.analyze_project_structure")
     def test_run_pipeline_handles_analyze_exception(self, mock_analyze, mock_checker_cls):
         mock_checker = MagicMock()
         mock_checker.run_all.return_value = {

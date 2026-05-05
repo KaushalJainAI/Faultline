@@ -9,7 +9,7 @@ import logging
 
 from langchain_core.tools import tool
 
-from core.cli_provider import ProviderManager
+from core.providers.cli_provider import ProviderManager
 
 logger = logging.getLogger("FaultlineTools")
 
@@ -48,4 +48,3 @@ def execute_codex_cli_task(task: str, target_dir: str) -> str:
         return manager.run("codex", task)
     except Exception as e:
         return f"Execution error: {e}"
-

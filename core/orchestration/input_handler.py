@@ -410,7 +410,7 @@ class InputHandler:
 
     def _handle_model_command(self, action: SteeringAction) -> SteeringAction:
         """Handle /model â€” list models or switch to a specific one."""
-        from core.model_registry import list_models, find_model, format_model_list
+        from core.providers.model_registry import list_models, find_model, format_model_list
 
         if not action.model_value:
             # Try arrow-key + Enter selection via questionary; fall back to

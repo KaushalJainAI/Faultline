@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.agent import AegisAgent
-from core.pipeline import PipelineRunner
+from core.orchestration.pipeline import PipelineRunner
 
 
 async def main():

@@ -9,7 +9,7 @@ from django.utils import timezone
 
 from campaigns.models import Campaign, Finding
 from campaigns.services import generate_campaign_report, run_campaign_pipeline
-from core.cli_provider import ClaudeAdapter, CodexAdapter, GeminiAdapter, ProviderManager
+from core.providers.cli_provider import ClaudeAdapter, CodexAdapter, GeminiAdapter, ProviderManager
 from skills.ast_grapher import ASTGrapher
 from skills.guardrails import GuardrailValidator
 from skills.qa_engineer import QAEngineer
@@ -78,7 +78,7 @@ class CampaignAPITests(TestCase):
         self.assertIn("OPENROUTER_API_KEY", response.json()["error"])
 
     @patch("campaigns.views.threading.Thread")
-    @patch("core.provider_config.ProviderManager.get_status")
+    @patch("core.providers.provider_config.ProviderManager.get_status")
     def test_start_campaign_accepts_authenticated_cli_provider(self, get_status, thread_cls):
         get_status.return_value = {
             "claude": {"installed": True, "auth_ok": True, "message": "Claude CLI detected"},
@@ -233,7 +233,7 @@ class CampaignAPITests(TestCase):
 
 
 class SkillTests(TestCase):
-    @patch("core.cli_provider.subprocess.run")
+    @patch("core.providers.cli_provider.subprocess.run")
     def test_claude_adapter_uses_headless_prompt_mode(self, subprocess_run):
         subprocess_run.return_value.returncode = 0
         subprocess_run.return_value.stdout = "ok"
@@ -245,7 +245,7 @@ class SkillTests(TestCase):
         self.assertEqual(subprocess_run.call_args.args[0], ["claude", "-p", "hello", "--dangerously-skip-permissions"])
 
     @patch.dict("os.environ", {"FAULTLINE_CLAUDE_BINARY": "C:\\Tools\\claude.cmd"})
-    @patch("core.cli_provider.subprocess.run")
+    @patch("core.providers.cli_provider.subprocess.run")
     def test_cli_adapter_accepts_binary_override(self, subprocess_run):
         subprocess_run.return_value.returncode = 0
         subprocess_run.return_value.stdout = "ok"
@@ -257,7 +257,7 @@ class SkillTests(TestCase):
         self.assertEqual(subprocess_run.call_args.args[0], ["C:\\Tools\\claude.cmd", "-p", "hello", "--dangerously-skip-permissions"])
 
     @patch.dict("os.environ", {"FAULTLINE_CLAUDE_BINARY": "C:\\Tools\\claude.cmd"})
-    @patch("core.cli_provider.shutil.which")
+    @patch("core.providers.cli_provider.shutil.which")
     def test_cli_adapter_checks_binary_override_installation(self, which):
         which.return_value = "C:\\Tools\\claude.cmd"
 
@@ -265,7 +265,7 @@ class SkillTests(TestCase):
         which.assert_called_once_with("C:\\Tools\\claude.cmd")
 
     @patch.dict("os.environ", {"FAULTLINE_GEMINI_CLI_ARGS": ""})
-    @patch("core.cli_provider.subprocess.run")
+    @patch("core.providers.cli_provider.subprocess.run")
     def test_gemini_adapter_uses_headless_prompt_mode(self, subprocess_run):
         subprocess_run.return_value.returncode = 0
         subprocess_run.return_value.stdout = "ok"
@@ -276,7 +276,7 @@ class SkillTests(TestCase):
         self.assertEqual(output, "ok")
         self.assertEqual(subprocess_run.call_args.args[0], ["gemini", "-p", "hello", "--dangerously-skip-permissions", "--skip-trust"])
 
-    @patch("core.cli_provider.subprocess.run")
+    @patch("core.providers.cli_provider.subprocess.run")
     def test_codex_adapter_uses_exec_prompt_mode(self, subprocess_run):
         subprocess_run.return_value.returncode = 0
         subprocess_run.return_value.stdout = "ok"
@@ -291,7 +291,7 @@ class SkillTests(TestCase):
         )
 
     @patch.dict("os.environ", {"FAULTLINE_CODEX_SANDBOX": "workspace-write", "FAULTLINE_CODEX_CLI_ARGS": "--skip-git-repo-check"})
-    @patch("core.cli_provider.subprocess.run")
+    @patch("core.providers.cli_provider.subprocess.run")
     def test_codex_adapter_accepts_extra_args(self, subprocess_run):
         subprocess_run.return_value.returncode = 0
         subprocess_run.return_value.stdout = "ok"
@@ -305,7 +305,7 @@ class SkillTests(TestCase):
             ["codex", "exec", "hello", "--dangerously-skip-permissions", "--cd", ".", "--sandbox", "workspace-write", "--skip-git-repo-check"],
         )
 
-    @patch("core.cli_provider.ProviderManager.get_status")
+    @patch("core.providers.cli_provider.ProviderManager.get_status")
     def test_provider_manager_rejects_unauthenticated_cli(self, get_status):
         get_status.return_value = {
             "gemini": {"installed": True, "auth_ok": False, "message": "not logged in"},

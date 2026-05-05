@@ -120,7 +120,7 @@ To make reviews easier, `core/` is now grouped by responsibility with compatibil
 - `core/intelligence/`: prompts, context intelligence, and progress logic (`prompts`, `content_manager`, `progress_tracker`, `index_state`, `api_knowledge`)
 - `core/harness/components/`: harness architecture primitives (loop/context/registry/subagents/skills/persistence/prompt/hooks/permissions)
 
-Legacy imports like `core.content_manager` or `core.checkpoint` still work through shim modules that re-export from grouped implementations.
+Use the grouped imports directly, such as `core.intelligence.content_manager` and `core.orchestration.checkpoint`.
 
 ## Harness Architecture Map (9 Components)
 

@@ -159,7 +159,7 @@ class PipelineRunner:
         semantic = {"status": "skipped"}
         if include_semantic and any(Path(self.target_dir).rglob("*.md")):
             from skills.semantic_indexer import project_db_path
-            from core import index_state
+            from core.intelligence import index_state
             db_path = str(project_db_path("./db/faiss_store", self.target_dir))
             index_state.start_background_index(self.target_dir, db_path)
             semantic = {"status": "indexing_in_background", "db_path": db_path}

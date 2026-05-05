@@ -21,7 +21,7 @@ from skills.log_correlator import LogCorrelator
 from skills.semantic_indexer import SemanticIndexer
 from skills.qa_engineer import QAEngineer
 from skills.visualizer import Visualizer
-from core.api_knowledge import query_api_knowledge
+from core.intelligence.api_knowledge import query_api_knowledge
 from core.tools_modules.delegation import (
     execute_claude_code_task,
     execute_gemini_cli_task,
@@ -98,7 +98,7 @@ def _vault_safe_output(content: str, tool_name: str, run_folder: str, source_hin
     Checks if a tool output is too large for the LLM's context.
     If it is, offloads it to the run_folder/content_store and returns a summary + REF.
     """
-    from core.content_manager import estimate_tokens, store_and_summarize, MESSAGE_CLIP_THRESHOLD_TOKENS
+    from core.intelligence.content_manager import estimate_tokens, store_and_summarize, MESSAGE_CLIP_THRESHOLD_TOKENS
     
     tokens = estimate_tokens(content)
     # Use half of the clip threshold as a safety limit for proactive offloading
@@ -122,7 +122,7 @@ def _auto_fan_deterministic_findings(results: dict) -> None:
     No-op if live_report_var is not set.
     """
     try:
-        from core.context import live_report_var
+        from core.orchestration.context import live_report_var
         _lr = live_report_var.get(None)
         if _lr is None:
             return
@@ -228,7 +228,7 @@ def query_knowledge_base(query_text: str, db_path: str = "") -> str:
     """
     logger.info("Tool Call: Querying knowledge base for: %s", query_text)
     try:
-        from core import index_state
+        from core.intelligence import index_state
         from skills.semantic_indexer import SemanticIndexer
         resolved_db = db_path or index_state.current_db_path() or "./db/faiss_store"
         if index_state.is_indexing():
@@ -276,7 +276,7 @@ def validate_python_code(code_string: str, target_dir: str) -> str:
 def _auto_fan_chaos_findings(crashes: list, anomaly_report: dict, target_url: str) -> None:
     """Auto-write one finding per crash and one rolled-up anomaly finding."""
     try:
-        from core.context import live_report_var
+        from core.orchestration.context import live_report_var
         _lr = live_report_var.get(None)
         if _lr is None:
             return
@@ -345,7 +345,7 @@ async def execute_chaos_campaign(payloads_json: str, target_url: str, log_file: 
     """
     logger.info(f"Tool Call: Executing Chaos Campaign against {target_url}")
     try:
-        from core.context import chaos_vetoed_var
+        from core.orchestration.context import chaos_vetoed_var
         if chaos_vetoed_var.get():
             chaos_vetoed_var.set(False)  # one-shot veto, reset for next call
             return json.dumps({
@@ -360,7 +360,7 @@ async def execute_chaos_campaign(payloads_json: str, target_url: str, log_file: 
         if not isinstance(payloads, list):
             return "Error: payloads_json must be a JSON array."
 
-        from core.context import session_headers_var
+        from core.orchestration.context import session_headers_var
         headers = session_headers_var.get()
         engine = SiegeEngine(target_url, session_headers=headers)
         correlator = LogCorrelator(log_file)
@@ -406,7 +406,7 @@ def _auto_fan_test_findings(output: str, test_type: str, case_kind: str, run_fol
     Also writes an informational entry to api_results_log.jsonl for every call seen.
     """
     try:
-        from core.context import live_report_var
+        from core.orchestration.context import live_report_var
         import re as _re, json as _json
         _lr = live_report_var.get(None)
         if _lr is None:
@@ -605,7 +605,7 @@ def save_vulnerability_report(report_markdown: str, filename: str = "agent_repor
 
         # Also append synthesis to the live report (sync — see record_finding rationale)
         try:
-            from core.context import live_report_var
+            from core.orchestration.context import live_report_var
             _lr = live_report_var.get(None)
             if _lr is not None:
                 _lr.append_section_sync("Agent Synthesis", report_markdown)
@@ -770,7 +770,7 @@ def record_finding(
 
     # ── 1. Live report + findings.jsonl (always runs, no Django needed) ──
     try:
-        from core.context import live_report_var
+        from core.orchestration.context import live_report_var
         _lr = live_report_var.get(None)
         if _lr is not None:
             _lr.append_finding_sync(_finding_data)
@@ -893,8 +893,8 @@ def get_credential(role: str = "default") -> str:
     logger.info("Tool Call: get_credential(role=%s)", role)
     import json as _json
     try:
-        from core.credential_store import get_store
-        from core.context import session_headers_var
+        from core.providers.credential_store import get_store
+        from core.orchestration.context import session_headers_var
 
         store = get_store()
 
@@ -1290,7 +1290,7 @@ def summarize_to_report(heading: str, content: str, run_folder: str) -> str:
     """
     logger.info("Tool Call: summarize_to_report — heading='%s'", heading)
     try:
-        from core.context import live_report_var
+        from core.orchestration.context import live_report_var
         _lr = live_report_var.get(None)
         if _lr is not None:
             _lr.append_section_sync(heading, content)
@@ -1971,7 +1971,7 @@ def _auto_fan_security_findings(
     Returns the count of findings written.
     """
     try:
-        from core.context import live_report_var
+        from core.orchestration.context import live_report_var
         _lr = live_report_var.get(None)
         if _lr is None:
             return 0
@@ -2224,7 +2224,7 @@ async def execute_security_campaign(
 
     # Run the assault
     try:
-        from core.context import session_headers_var
+        from core.orchestration.context import session_headers_var
         session_headers = session_headers_var.get({})
     except Exception:
         session_headers = {}
@@ -2330,7 +2330,7 @@ def audit_file_for_vulnerabilities(
         # Store in content cache for future dedup
         if run_folder and sha:
             try:
-                from core.content_manager import store_and_summarize
+                from core.intelligence.content_manager import store_and_summarize
                 _, ref_id = store_and_summarize(
                     json.dumps(result), "audit_file_for_vulnerabilities",
                     run_folder, 0, source_hint=file_path.replace(os.sep, "_"), turn=-1,

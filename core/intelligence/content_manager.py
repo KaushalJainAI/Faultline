@@ -66,20 +66,70 @@ def estimate_tokens(text: str) -> int:
 
 def _archive_message(msg: BaseMessage, run_folder: str, msg_id: str) -> None:
     """Saves the full message content to the history_vault."""
-    if not run_folder: return
+    if not run_folder:
+        return
     p = Path(run_folder) / "history_vault" / f"{msg_id}.txt"
     p.parent.mkdir(parents=True, exist_ok=True)
     
     content = msg.content if isinstance(msg.content, str) else str(msg.content)
     p.write_text(content, encoding="utf-8")
 
+
+def _message_role(msg: BaseMessage) -> str:
+    if isinstance(msg, HumanMessage):
+        return "human"
+    if isinstance(msg, ToolMessage):
+        return "tool"
+    if isinstance(msg, SystemMessage):
+        return "system"
+    if isinstance(msg, AIMessage) or hasattr(msg, "tool_calls"):
+        return "ai"
+    return getattr(msg, "type", "message")
+
+
+def _history_message_id(index: int, msg: BaseMessage) -> str:
+    role = re.sub(r"[^a-z0-9]+", "_", _message_role(msg).lower()).strip("_") or "msg"
+    tool_name = ""
+    if isinstance(msg, ToolMessage) and msg.name:
+        tool_name = "__" + re.sub(r"[^a-z0-9]+", "_", msg.name.lower()).strip("_")[:32]
+    return f"hist_{index:04d}_{role}{tool_name}"
+
+
+def _archive_history_messages(messages: List[BaseMessage], run_folder: str) -> None:
+    """
+    Persist every message in the run folder before context windowing.
+
+    The model receives only compact refs, but the full transcript remains
+    available through retrieve_history_message(run_folder, message_id).
+    """
+    if not run_folder:
+        return
+    try:
+        rows = [
+            "## History Vault Index",
+            "",
+            "| message_id | role | tokens_est | summary |",
+            "|------------|------|------------|---------|",
+        ]
+        vault_dir = Path(run_folder) / "history_vault"
+        vault_dir.mkdir(parents=True, exist_ok=True)
+        for index, msg in enumerate(messages):
+            msg_id = _history_message_id(index, msg)
+            _archive_message(msg, run_folder, msg_id)
+            summary = _summarize_message(msg).replace("|", "\\|").replace("\n", " ")
+            rows.append(f"| `{msg_id}` | {_message_role(msg)} | {_msg_tokens(msg):,} | {summary[:140]} |")
+        Path(run_folder, "history_index.md").write_text("\n".join(rows), encoding="utf-8")
+    except Exception as exc:
+        logger.debug("_archive_history_messages error: %s", exc)
+
 def _summarize_message(msg: BaseMessage) -> str:
     """Returns a 1-line summary of a message's content/intent."""
     if isinstance(msg, HumanMessage):
         return f"Human: {str(msg.content)[:80]}..."
-    if isinstance(msg, AIMessage):
-        if msg.tool_calls:
-            tools = [t["name"] for t in msg.tool_calls]
+    if isinstance(msg, AIMessage) or hasattr(msg, "tool_calls"):
+        tool_calls = getattr(msg, "tool_calls", []) or []
+        if tool_calls:
+            tools = [t.get("name", "?") for t in tool_calls]
             return f"AI: Calling tools {tools}"
         return f"AI: {str(msg.content)[:80]}..."
     if isinstance(msg, ToolMessage):
@@ -91,12 +141,13 @@ def _summarize_message(msg: BaseMessage) -> str:
 def _msg_tokens(msg: BaseMessage) -> int:
     content = msg.content if isinstance(msg.content, str) else str(msg.content)
     base = estimate_tokens(content)
-    if isinstance(msg, AIMessage) and msg.tool_calls:
+    tool_calls = getattr(msg, "tool_calls", None)
+    if tool_calls:
         import json as _json
         try:
-            base += estimate_tokens(_json.dumps(msg.tool_calls))
+            base += estimate_tokens(_json.dumps(tool_calls))
         except Exception:
-            base += 50 * len(msg.tool_calls)
+            base += 50 * len(tool_calls)
     return base
 
 
@@ -215,6 +266,19 @@ def read_memory_md(run_folder: str) -> str:
     return ""
 
 
+def read_history_index(run_folder: str) -> str:
+    """Return the compact history vault index, if present."""
+    if not run_folder:
+        return ""
+    try:
+        p = Path(run_folder) / "history_index.md"
+        if p.exists():
+            return p.read_text(encoding="utf-8")
+    except Exception:
+        pass
+    return ""
+
+
 def _trim_memory_text(memory_text: str, max_tokens: int) -> str:
     """Trim injected memory.md text to a strict token ceiling."""
     if not memory_text or max_tokens <= 0:
@@ -306,7 +370,7 @@ def _extract_cycles(messages: List[BaseMessage]) -> List[List[BaseMessage]]:
     for msg in messages:
         if isinstance(msg, HumanMessage):
             continue
-        if isinstance(msg, AIMessage):
+        if isinstance(msg, AIMessage) or hasattr(msg, "tool_calls"):
             if current:
                 cycles.append(current)
             current = [msg]
@@ -489,16 +553,28 @@ def build_tiered_context(
         "windowing_applied": False,
     }
 
+    # Persist the complete message history before deciding what enters the
+    # model window. This keeps storage lossless while prompt input stays small.
+    working_messages = list(messages)
+    _archive_history_messages(working_messages, run_folder)
+
     # â”€â”€ Memory ledger - always injected, never dropped â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    memory_text = _trim_memory_text(read_memory_md(run_folder), MEMORY_INJECT_MAX_TOKENS)
+    memory_parts = []
+    stored_refs = read_memory_md(run_folder)
+    if stored_refs:
+        memory_parts.append(stored_refs)
+    history_index = read_history_index(run_folder)
+    if history_index:
+        memory_parts.append(
+            history_index
+            + "\n\nUse `retrieve_history_message(run_folder, message_id)` "
+            "to recover any exact prior message listed above."
+        )
+    memory_text = _trim_memory_text("\n\n".join(memory_parts), MEMORY_INJECT_MAX_TOKENS)
     memory_msg: Optional[SystemMessage] = (
         SystemMessage(content=memory_text) if memory_text else None
     )
     memory_tokens = estimate_tokens(memory_text) if memory_text else 0
-
-    # Keep full-fidelity messages and compact only when total context exceeds budget.
-    # This avoids destructive per-message truncation and lets tiered windowing decide.
-    working_messages = list(messages)
 
     sys_tokens = estimate_tokens(str(system_msg.content))
     msg_tokens_total = sum(_msg_tokens(m) for m in working_messages)
@@ -508,8 +584,9 @@ def build_tiered_context(
     safety_margin = 30000
     safe_max = max(1, max_tokens - safety_margin)
 
-    # Fast path - already within budget, no windowing needed
-    if stats["total_input_tokens_est"] <= safe_max:
+    # Fast path only for genuinely short conversations. Once a campaign has
+    # meaningful history, keep the prompt ref-based even if it technically fits.
+    if stats["total_input_tokens_est"] <= safe_max and len(working_messages) <= 12:
         final: List[BaseMessage] = [system_msg]
         if memory_msg:
             final.append(memory_msg)
@@ -522,68 +599,91 @@ def build_tiered_context(
     
     # VIRTUAL MEMORY ARCHIVAL ENGINE
     # ------------------------------------------------------------------
-    # Tier 1 (Turn Age <= 3): Full Fidelity
-    # Tier 2 (Turn Age <= 8): Summary + Vault Reference
-    # Tier 3 (Turn Age > 8): Archived (Deep Archive)
-    
+    # LangGraph appends AI/tool cycles, not a new HumanMessage per turn.
+    # Group by those cycles so old tool-call args and large tool responses do
+    # not remain "recent" forever.
+
     final_messages = [system_msg]
     if memory_msg:
         final_messages.append(memory_msg)
-    
-    # Work backwards to tag turn ages
-    msg_metadata = []
-    current_turn_age = 1
-    for m in reversed(working_messages):
-        if isinstance(m, HumanMessage):
-            current_turn_age += 1
-        msg_metadata.append({"msg": m, "age": current_turn_age, "index": len(msg_metadata)})
-    
-    msg_metadata.reverse()
-    
-    for item in msg_metadata:
-        m = item["msg"]
-        age = item["age"]
-        m_id = f"msg_turn_{age}_{item['index']}"
-        
-        if age <= 3:
-            final_messages.append(m)
-        elif age <= 8:
-            _archive_message(m, run_folder, m_id)
-            summary = _summarize_message(m)
-            marker_text = f"\n[SUMMARY: {summary}]\n[VAULT REF: {m_id}. Use retrieve_history_message('{m_id}') to recall full text.]"
-            
-            if isinstance(m, AIMessage):
-                final_messages.append(AIMessage(content=marker_text, tool_calls=getattr(m, 'tool_calls', [])))
-            elif isinstance(m, ToolMessage):
-                final_messages.append(
-                    ToolMessage(
-                        content=marker_text,
-                        tool_call_id=m.tool_call_id,
-                        name=getattr(m, "name", None),
-                        status=getattr(m, "status", None),
-                    )
-                )
-            elif isinstance(m, HumanMessage):
-                final_messages.append(HumanMessage(content=marker_text))
-            else:
-                final_messages.append(SystemMessage(content=marker_text))
-            stats["cycles_compressed"] += 1
-        else:
-            _archive_message(m, run_folder, m_id)
-            stats["cycles_dropped"] += 1
-    
+
+    human_messages = [m for m in working_messages if isinstance(m, HumanMessage)]
+    non_human_messages = [m for m in working_messages if not isinstance(m, HumanMessage)]
+    cycles = _extract_cycles(non_human_messages)
+    stats["cycles_total"] = len(cycles)
+
+    # Keep the operator's objective and most recent steering in full.
+    for hm in human_messages[-3:]:
+        final_messages.append(hm)
+
+    latest_full_cycles = int(os.environ.get("FAULTLINE_TIER1_CYCLES", "1"))
+    tier2_cycles = int(os.environ.get("FAULTLINE_TIER2_CYCLES", str(TIER2_CYCLES)))
+    split_at = max(0, len(cycles) - latest_full_cycles)
+    tier1 = cycles[split_at:]
+    older = cycles[:split_at]
+    tier2_start = max(0, len(older) - tier2_cycles)
+    tier2 = older[tier2_start:]
+    tier3 = older[:tier2_start]
+
+    stats["cycles_in_tier1"] = len(tier1)
+    stats["cycles_in_tier2"] = len(tier2)
+
+    counter = 0
+    seen_calls: dict[tuple[str, str], int] = {}
+
+    if tier3:
+        summary, counter = compress_cycle_to_summary(
+            tier3,
+            run_folder=run_folder,
+            counter=counter,
+            turn=current_turn,
+        )
+        final_messages.append(summary)
+        stats["cycles_compressed"] += len(tier3)
+
+    for cycle in tier2:
+        summary, counter = compress_cycle_to_summary(
+            [cycle],
+            run_folder=run_folder,
+            counter=counter,
+            turn=current_turn,
+        )
+        final_messages.append(summary)
+        stats["cycles_compressed"] += 1
+
+    for cycle in tier1:
+        processed, counter = _process_cycle(
+            cycle,
+            run_folder=run_folder,
+            counter=counter,
+            turn=current_turn,
+            seen_calls=seen_calls,
+        )
+        final_messages.extend(processed)
+
     stats["output_messages"] = len(final_messages)
     stats["output_tokens_est"] = sum(_msg_tokens(m) for m in final_messages)
-    
-    # EMERGENCY RECURSIVE PRUNING
-    # If we are still over the safe limit, we MUST drop messages starting from the oldest.
-    # This is a last resort to prevent a 400 Bad Request.
-    SAFETY_LIMIT = max(1, safe_max)
-    
-    # Indices 0 and 1 are System and Memory, we shouldn't drop those unless absolutely forced.
-    while stats["output_tokens_est"] > SAFETY_LIMIT and len(final_messages) > 3:
-        dropped = final_messages.pop(2)
+
+    # EMERGENCY PRUNING
+    # Drop oldest non-essential context until the request is below the safe
+    # limit. Preserve system, memory, and at least the latest cycle/result.
+    safety_limit = max(1, safe_max)
+    protected_prefix = 2 if memory_msg else 1
+    while stats["output_tokens_est"] > safety_limit and len(final_messages) > protected_prefix + 2:
+        dropped = final_messages.pop(protected_prefix)
         stats["output_tokens_est"] -= _msg_tokens(dropped)
+        stats["cycles_dropped"] += 1
+
+    # If a single recent cycle is still too large, collapse everything after
+    # the fixed prefix into one tiny breadcrumb instead of risking a provider
+    # 400. The full raw messages were already checkpointed/history-vaulted.
+    if stats["output_tokens_est"] > safety_limit and len(final_messages) > protected_prefix:
+        overflow_note = HumanMessage(content=(
+            "[Context emergency compaction: recent messages were too large to fit. "
+            "Use memory.md/content_store refs or retrieve_history_message for exact prior content.]"
+        ))
+        final_messages = final_messages[:protected_prefix] + [overflow_note]
+        stats["output_tokens_est"] = sum(_msg_tokens(m) for m in final_messages)
         stats["cycles_dropped"] += 1
 
     return final_messages, stats

@@ -8,9 +8,9 @@ from django.utils import timezone
 
 from campaigns.models import Campaign, Finding, ToolRun
 from core.agent import AegisAgent
-from core.pipeline import PipelineRunner
-from core.provider_config import get_config_status
-from core.run_context import make_run_folder
+from core.orchestration.pipeline import PipelineRunner
+from core.providers.provider_config import get_config_status
+from core.orchestration.run_context import make_run_folder
 from core.tools import analyze_project_structure, index_project_documentation
 from skills.medic import Medic
 from vault.services import Authenticator

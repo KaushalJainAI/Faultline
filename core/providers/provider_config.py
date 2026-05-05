@@ -1,7 +1,7 @@
 ﻿import os
 from typing import Optional, Tuple
 
-from core.cli_provider import ProviderManager
+from core.providers.cli_provider import ProviderManager
 
 
 API_PROVIDERS = {"openai", "openrouter", "anthropic", "google", "nvidia"}
