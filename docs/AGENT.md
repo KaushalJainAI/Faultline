@@ -1,6 +1,6 @@
 # Aegis-Breaker Agent
 
-**Date**: 2026-05-01
+**Date**: 2026-05-05
 **Description**: Detailed explanation of the Aegis-Breaker agent architecture, runtime flow, and tool orchestration using LangGraph.
 
 Aegis-Breaker is the LangGraph orchestration layer for Faultline. Its job is to combine normal QA verification with adversarial chaos testing.
@@ -98,3 +98,42 @@ To maintain efficiency during long-running campaigns with large codebases, Fault
 - **On-Demand Retrieval**: The agent can use the `retrieve_stored_content` tool to fetch the original, unsummarized data using the reference ID at any time.
 
 This hybrid approach ensures the agent remains responsive and cost-effective without losing access to granular technical data when it's needed for final reporting or patch generation.
+
+## Internal Refactor Notes (May 2026)
+
+The codebase is undergoing a readability-first refactor with a strict "no behavior change" goal.
+
+- `core/agent.py` has started moving large inline setup blocks into focused helper methods (live report setup, boilerplate seeding, resume-state reconstruction, transcript writing, progress tracker initialization).
+- Token estimation now uses a shared utility module: `core/token_utils.py`.
+- Module-specific estimation behavior is preserved:
+  - `core/content_manager.py` keeps its conservative context-protection ratio.
+  - `core/progress_tracker.py` keeps its UI/budget-awareness ratio and minimum non-empty token floor.
+
+This preserves existing campaign behavior while reducing duplicate logic and making future module splitting safer.
+
+## Core Folder Grouping
+
+To make reviews easier, `core/` is now grouped by responsibility with compatibility shims at legacy paths:
+
+- `core/orchestration/`: runtime orchestration and execution flow (`pipeline`, `checkpoint`, `context`, `input_handler`, `live_report`, `session_store`, `run_context`, `cli_ui`)
+- `core/providers/`: provider and model integration (`cli_provider`, `provider_config`, `model_registry`, `credential_store`)
+- `core/intelligence/`: prompts, context intelligence, and progress logic (`prompts`, `content_manager`, `progress_tracker`, `index_state`, `api_knowledge`)
+- `core/harness/components/`: harness architecture primitives (loop/context/registry/subagents/skills/persistence/prompt/hooks/permissions)
+
+Legacy imports like `core.content_manager` or `core.checkpoint` still work through shim modules that re-export from grouped implementations.
+
+## Harness Architecture Map (9 Components)
+
+Faultline now includes a dedicated harness package at `core/harness/` to mirror standard coding-agent design patterns:
+
+1. While Loop (Iteration Engine): `core/harness/iteration_engine.py`
+2. Context Management & Compaction: `core/harness/context_compaction.py`
+3. Tools & Skills Registry: `core/harness/registry.py`
+4. Sub-Agent Management: `core/harness/sub_agents.py`
+5. Built-in Skills Catalog: `core/harness/built_in_skills.py`
+6. Session Persistence / Memory: `core/harness/persistence.py`
+7. System Prompt Assembly: `core/harness/prompt_assembly.py`
+8. Lifecycle Hooks (Pre/Post Tool): `core/harness/hooks.py`
+9. Permissions & Safety Layer: `core/harness/permissions.py`
+
+Composition root: `core/harness/runtime.py` (`HarnessRuntime`), which is now instantiated by `AegisAgent`.

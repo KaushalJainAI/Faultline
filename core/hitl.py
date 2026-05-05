@@ -1,27 +1,18 @@
-"""
-Human-in-the-Loop (HITL) manager for Faultline.
-
-Permission prompts are printed inline to stdout (like Claude Code) — no Rich
-modals. The operator sees the tool name and description, then types y or N.
-A 30-second timeout defaults to deny so a missed prompt never stalls the run.
-
-When HITL is disabled (headless, REST API) all methods return safe defaults.
-"""
+"""Human-in-the-Loop (HITL) manager for Faultline."""
 
 import asyncio
 import logging
 import sys
 import threading
-from typing import Optional
+from typing import Optional, Sequence
 
 logger = logging.getLogger("FaultlineHITL")
 
 _HITL_ENABLED: bool = False
-HITL_PROMPT_TIMEOUT: int = 30   # seconds before defaulting to deny
+HITL_PROMPT_TIMEOUT: int = 30
 
 
 def enable_hitl() -> None:
-    """Opt in to interactive prompts. Called only by the CLI entry point."""
     global _HITL_ENABLED
     _HITL_ENABLED = True
 
@@ -35,15 +26,7 @@ def is_enabled() -> bool:
     return _HITL_ENABLED
 
 
-# ---------------------------------------------------------------------------
-# Cross-platform stdin readline with timeout
-# ---------------------------------------------------------------------------
-
 def _read_line_with_timeout(seconds: int) -> Optional[str]:
-    """
-    Read one line from stdin, returning None if the user doesn't respond
-    within `seconds`. Works on both POSIX and Windows.
-    """
     result: list[Optional[str]] = [None]
     done = threading.Event()
 
@@ -59,44 +42,56 @@ def _read_line_with_timeout(seconds: int) -> Optional[str]:
     t.start()
     if done.wait(timeout=seconds):
         return result[0]
-    # Timeout — print a newline so the terminal isn't left mid-line
     sys.stdout.write("\n")
     sys.stdout.flush()
     return None
 
 
-# ---------------------------------------------------------------------------
-# HITLManager
-# ---------------------------------------------------------------------------
+def _normalize_ab_esc(raw: str) -> str:
+    """Normalize user input into 'a', 'b', or 'esc'."""
+    s = (raw or "").strip().lower()
+    if s in {"a", "1", "option a"}:
+        return "a"
+    if s in {"b", "2", "option b"}:
+        return "b"
+    if s in {"esc", "escape", "cancel", "skip", ""}:
+        return "esc"
+    return "esc"
+
 
 class HITLManager:
-    """
-    Inline human-in-the-loop prompts — no modal dialogs.
-
-    Call directly from sync code, or from async code via the
-    `async_request_*` helpers below which off-load the blocking read
-    to a thread so the event loop is not frozen.
-    """
+    def __init__(self) -> None:
+        self._always_allow_actions: set[str] = set()
+        self._always_deny_actions: set[str] = set()
 
     def request_permission(self, action_name: str, description: str) -> bool:
         if not _HITL_ENABLED:
             return True
+        if action_name in self._always_allow_actions:
+            return True
+        if action_name in self._always_deny_actions:
+            return False
         try:
             sys.stdout.write(
-                f"\n[faultline] Tool: {action_name}\n"
-                f"  {description}\n"
-                f"  Allow? [y/N] "
+                f"\n[faultline] Permission required\n"
+                f"  Action : {action_name}\n"
+                f"  Detail : {description}\n"
+                f"  A) Allow\n"
+                f"  B) Deny\n"
+                f"  Esc) Cancel / no decision\n"
+                f"  Choose [A/B/Esc] (default: Esc, timeout: {HITL_PROMPT_TIMEOUT}s): "
             )
             sys.stdout.flush()
             line = _read_line_with_timeout(HITL_PROMPT_TIMEOUT)
             if line is None:
-                sys.stdout.write(f"  (no response in {HITL_PROMPT_TIMEOUT}s — denied)\n")
-                sys.stdout.flush()
-                logger.warning("HITL: %s — timed out, denied.", action_name)
+                logger.warning("HITL timeout for %s; denied.", action_name)
                 return False
-            approved = (line or "").strip().lower() == "y"
-            logger.info("HITL: %s — %s.", action_name, "approved" if approved else "denied")
-            return approved
+            choice = _normalize_ab_esc(line)
+            if choice == "a":
+                return True
+            if choice == "b":
+                return False
+            return False
         except Exception as exc:
             logger.warning("HITL permission prompt failed: %s. Defaulting to deny.", exc)
             return False
@@ -105,13 +100,14 @@ class HITLManager:
         if not _HITL_ENABLED:
             return ""
         try:
-            msg = f"\n[faultline] Credential needed: {name}"
+            msg = f"\n[faultline] Input needed: {name}"
             if hint:
                 msg += f" ({hint})"
             sys.stdout.write(msg + "\n  Value: ")
             sys.stdout.flush()
             if sensitive:
                 import getpass
+
                 return getpass.getpass("") or ""
             value = (_read_line_with_timeout(60) or "").strip()
             return value
@@ -119,24 +115,98 @@ class HITLManager:
             logger.warning("HITL credential prompt failed: %s. Returning empty.", exc)
             return ""
 
+    def request_text(self, question: str, hint: str = "", timeout: int = 120, default: str = "") -> str:
+        if not _HITL_ENABLED:
+            return ""
+        try:
+            sys.stdout.write(f"\n[faultline] Input needed\n  Question: {question}\n")
+            if hint:
+                sys.stdout.write(f"  Hint    : {hint}\n")
+            if default:
+                sys.stdout.write(f"  Default : {default}\n")
+            sys.stdout.write(f"  Answer (timeout: {timeout}s): ")
+            sys.stdout.flush()
+            line = _read_line_with_timeout(timeout)
+            if line is None:
+                return default
+            answer = (line or "").strip()
+            return answer if answer else default
+        except Exception as exc:
+            logger.warning("HITL text prompt failed: %s. Returning default.", exc)
+            return default
 
-# Module-level singleton — import this from anywhere
+    def request_choice(
+        self,
+        question: str,
+        options: Sequence[str],
+        hint: str = "",
+        timeout: int = 120,
+        default_index: int = 0,
+    ) -> str:
+        opts = [o.strip() for o in options if str(o).strip()]
+        if not opts:
+            return self.request_text(question=question, hint=hint, timeout=timeout, default="")
+        # This UI supports exactly two options + Esc.
+        if len(opts) == 1:
+            opts = [opts[0], "Cancel"]
+        elif len(opts) > 2:
+            opts = opts[:2]
+        safe_default = max(0, min(default_index, len(opts) - 1))
+        default_value = ""
+        if not _HITL_ENABLED:
+            return opts[safe_default]
+        try:
+            sys.stdout.write(f"\n[faultline] Choice needed\n  Question: {question}\n")
+            if hint:
+                sys.stdout.write(f"  Hint    : {hint}\n")
+            sys.stdout.write(f"  A) {opts[0]}\n")
+            sys.stdout.write(f"  B) {opts[1]}\n")
+            sys.stdout.write("  Esc) Cancel / choose nothing\n")
+            sys.stdout.write(f"  Choose [A/B/Esc] (default: Esc, timeout: {timeout}s): ")
+            sys.stdout.flush()
+            line = _read_line_with_timeout(timeout)
+            if line is None:
+                return default_value
+            pick = _normalize_ab_esc(line)
+            if pick == "a":
+                return opts[0]
+            if pick == "b":
+                return opts[1]
+            return default_value
+        except Exception as exc:
+            logger.warning("HITL choice prompt failed: %s. Returning default.", exc)
+            return default_value
+
+
 hitl = HITLManager()
 
 
-# ---------------------------------------------------------------------------
-# Async bridges — call these from inside an asyncio coroutine
-# ---------------------------------------------------------------------------
-
 async def async_request_permission(action_name: str, description: str) -> bool:
-    """Async-safe wrapper. Off-loads the blocking stdin read to a thread."""
     if not _HITL_ENABLED:
         return True
     return await asyncio.to_thread(hitl.request_permission, action_name, description)
 
 
 async def async_request_credential(name: str, hint: str = "", sensitive: bool = True) -> str:
-    """Async-safe wrapper. Off-loads the blocking stdin read to a thread."""
     if not _HITL_ENABLED:
         return ""
     return await asyncio.to_thread(hitl.request_credential, name, hint, sensitive)
+
+
+async def async_request_text(question: str, hint: str = "", timeout: int = 120, default: str = "") -> str:
+    if not _HITL_ENABLED:
+        return ""
+    return await asyncio.to_thread(hitl.request_text, question, hint, timeout, default)
+
+
+async def async_request_choice(
+    question: str,
+    options: Sequence[str],
+    hint: str = "",
+    timeout: int = 120,
+    default_index: int = 0,
+) -> str:
+    if not _HITL_ENABLED:
+        opts = [o.strip() for o in options if str(o).strip()]
+        return opts[0] if opts else ""
+    return await asyncio.to_thread(hitl.request_choice, question, list(options), hint, timeout, default_index)

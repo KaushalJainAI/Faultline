@@ -21,7 +21,12 @@ from skills.log_correlator import LogCorrelator
 from skills.semantic_indexer import SemanticIndexer
 from skills.qa_engineer import QAEngineer
 from skills.visualizer import Visualizer
-from core.cli_provider import ProviderManager
+from core.api_knowledge import query_api_knowledge
+from core.tools_modules.delegation import (
+    execute_claude_code_task,
+    execute_gemini_cli_task,
+    execute_codex_cli_task,
+)
 
 logger = logging.getLogger("FaultlineTools")
 
@@ -87,6 +92,27 @@ def read_project_file(target_dir: str, relative_path: str, start_line: int = 1, 
         return json.dumps(raw, indent=2)
     except Exception as e:
         return f"Error reading project file: {e}"
+
+def _vault_safe_output(content: str, tool_name: str, run_folder: str, source_hint: str = "") -> str:
+    """
+    Checks if a tool output is too large for the LLM's context.
+    If it is, offloads it to the run_folder/content_store and returns a summary + REF.
+    """
+    from core.content_manager import estimate_tokens, store_and_summarize, MESSAGE_CLIP_THRESHOLD_TOKENS
+    
+    tokens = estimate_tokens(content)
+    # Use half of the clip threshold as a safety limit for proactive offloading
+    VAULT_LIMIT = MESSAGE_CLIP_THRESHOLD_TOKENS // 2 
+    
+    if tokens > VAULT_LIMIT and run_folder:
+        logger.info(f"Tool {tool_name} output too large ({tokens} tokens). Offloading to Vault.")
+        summary, ref_id = store_and_summarize(
+            content, tool_name, run_folder, 
+            turn=-1, # Generic turn
+            source_hint=source_hint
+        )
+        return summary
+    return content
 
 def _auto_fan_deterministic_findings(results: dict) -> None:
     """
@@ -178,7 +204,7 @@ def run_deterministic_checks(target_dir: str) -> str:
         return f"Error running deterministic checks: {e}"
 
 @tool
-def analyze_project_structure(target_dir: str) -> str:
+def analyze_project_structure(target_dir: str, run_folder: str = "") -> str:
     """
     Analyzes the Python project structure at target_dir using AST parsing.
     Returns a JSON string describing classes, functions, and imports per file.
@@ -188,7 +214,8 @@ def analyze_project_structure(target_dir: str) -> str:
     try:
         grapher = ASTGrapher(root_dir=target_dir)
         graph = grapher.analyze_project()
-        return json.dumps(graph)
+        raw_out = json.dumps(graph)
+        return _vault_safe_output(raw_out, "analyze_project_structure", run_folder or "", source_hint="ast_graph")
     except Exception as e:
         return f"Error analyzing project structure: {e}"
 
@@ -651,31 +678,6 @@ def copy_test_boilerplate(boilerplate_name: str, run_folder: str) -> str:
         return f"Error copying boilerplate: {e}"
 
 @tool
-def execute_claude_code_task(task: str, target_dir: str) -> str:
-    """
-    Delegates a complex coding or investigation task to the 'claude' CLI (Claude Code).
-    Use this for high-level refactoring or multi-file architectural changes.
-    """
-    logger.info(f"Tool Call: Delegating to Claude Code: {task}")
-    try:
-        manager = ProviderManager(target_dir=target_dir)
-        return manager.run("claude", task)
-    except Exception as e:
-        return f"Execution error: {e}"
-
-@tool
-def execute_gemini_cli_task(prompt: str, target_dir: str) -> str:
-    """
-    Delegates a reasoning or code analysis task to the 'gemini' CLI.
-    """
-    logger.info(f"Tool Call: Delegating to Gemini CLI: {prompt}")
-    try:
-        manager = ProviderManager(target_dir=target_dir)
-        return manager.run("gemini", prompt)
-    except Exception as e:
-        return f"Execution error: {e}"
-
-@tool
 def generate_dependency_graph(target_dir: str, output_path: str = "") -> str:
     """
     Generates an interactive Plotly Dash dependency graph of the project structure,
@@ -730,18 +732,6 @@ def generate_campaign_visuals(campaign_id: str, tool_runs_json: str, findings_js
         return json.dumps(paths, indent=2)
     except Exception as e:
         return f"Error generating visuals: {e}"
-
-@tool
-def execute_codex_cli_task(task: str, target_dir: str) -> str:
-    """
-    Delegates a coding task to the 'codex' CLI.
-    """
-    logger.info(f"Tool Call: Delegating to Codex CLI: {task}")
-    try:
-        manager = ProviderManager(target_dir=target_dir)
-        return manager.run("codex", task)
-    except Exception as e:
-        return f"Execution error: {e}"
 
 @tool
 def record_finding(
@@ -814,7 +804,12 @@ def record_finding(
     return f"Successfully recorded finding '{title}' for vision step {vision_step}."
 
 @tool
-def request_user_input(question: str, input_type: str = "text") -> str:
+def request_user_input(
+    question: str,
+    input_type: str = "text",
+    choices_csv: str = "",
+    default: str = "",
+) -> str:
     """
     Pause and ask the human operator for input during the campaign.
 
@@ -834,11 +829,35 @@ def request_user_input(question: str, input_type: str = "text") -> str:
     logger.info("Tool Call: request_user_input — %s (type=%s)", question, input_type)
     try:
         from core.hitl import hitl
-        sensitive = (input_type or "text").lower() == "credential"
-        return hitl.request_credential(
-            name=question,
-            hint="The value will be returned to the agent.",
-            sensitive=sensitive,
+        mode = (input_type or "text").strip().lower()
+        if mode == "credential":
+            return hitl.request_credential(
+                name=question,
+                hint="Sensitive input is hidden. Value is returned to the agent.",
+                sensitive=True,
+            )
+        if mode == "choice":
+            options = [c.strip() for c in (choices_csv or "").split(",") if c.strip()]
+            if not options:
+                options = ["yes", "no"]
+            default_idx = 0
+            if default:
+                try:
+                    default_idx = max(0, options.index(default))
+                except ValueError:
+                    default_idx = 0
+            return hitl.request_choice(
+                question=question,
+                options=options,
+                hint="Type option number or exact value.",
+                timeout=120,
+                default_index=default_idx,
+            )
+        return hitl.request_text(
+            question=question,
+            hint="Response is returned to the agent.",
+            timeout=120,
+            default=default,
         )
     except Exception as exc:
         return f"HITL request failed: {exc}"
@@ -1871,14 +1890,70 @@ def fetch_endpoint_bundle(target_dir: str, run_folder: str = "") -> str:
 
         n_routes = len(bundle["endpoint_map"])
         n_ser = len(bundle["serializers_summary"])
-        bundle["_summary"] = (
-            f"Discovered {n_routes} route(s) across {len(url_files)} urls.py file(s) "
-            f"and {n_ser} serializer file(s). "
-            f"endpoint_map.json {'saved to run_folder' if bundle.get('endpoint_map_saved') else 'not saved (no run_folder)'}."
-        )
-        return json.dumps(bundle, indent=2)
+        
+        # SUMMARY MODE: We save the full map to disk, but only return a summary to the LLM
+        # to prevent context overflow (400 Bad Request).
+        result_summary = {
+            "summary": (
+                f"Discovered {n_routes} route(s) across {len(url_files)} urls.py file(s) "
+                f"and {n_ser} serializer file(s). "
+                f"Full data saved to {run_folder if run_folder else 'memory'}/endpoint_map.json."
+            ),
+            "files_indexed": bundle["files_indexed"],
+            "endpoint_map_saved": bundle.get("endpoint_map_saved", False),
+            "sample_endpoints": bundle["endpoint_map"][:10] if n_routes > 0 else [],
+            "note": "Use query_api_knowledge(endpoint) to get schema for a specific route, or read_run_folder_file('endpoint_map.json') for the full list."
+        }
+        return json.dumps(result_summary, indent=2)
     except Exception as e:
         return f"Error in fetch_endpoint_bundle: {e}"
+
+@tool
+def retrieve_history_message(run_folder: str, message_id: str) -> str:
+    """
+    Retrieves the full content of an older message that was summarized for token efficiency.
+    Use this if you need to see exact tool outputs or previous code thoughts from Turn X.
+    
+    Args:
+        run_folder: Current campaign run folder.
+        message_id: The ID found in the summary, e.g. 'msg_t2_ai' or 'msg_t2_tool_glob'.
+    """
+    try:
+        p = Path(run_folder) / "history_vault" / f"{message_id}.txt"
+        if not p.exists():
+            return f"Error: Message {message_id} not found in history_vault."
+        return p.read_text(encoding="utf-8")
+    except Exception as e:
+        return f"Error retrieving history: {e}"
+    """
+    Retrieves the full content of an offloaded tool result or file audit from the vault.
+    Use this when you see a [REF:tool_name__...__tx] marker in your context.
+    
+    Args:
+        run_folder: The current campaign run folder.
+        ref_id: The specific reference ID from the marker.
+        start_char: Optional start offset (0-indexed).
+        length: Number of characters to read (default 50k).
+    """
+    try:
+        p = Path(run_folder) / "content_store" / f"{ref_id}.txt"
+        if not p.exists():
+            return f"Error: Reference {ref_id} not found in {run_folder}/content_store/."
+            
+        full_text = p.read_text(encoding="utf-8", errors="replace")
+        total_len = len(full_text)
+        
+        chunk = full_text[start_char : start_char + length]
+        is_partial = total_len > length
+        
+        header = f"--- VAULT RETRIEVAL: {ref_id} ({start_char} to {start_char + len(chunk)} of {total_len} chars) ---\n"
+        footer = f"\n--- END VAULT RETRIEVAL ---"
+        if is_partial:
+            footer = f"\n--- TRUNCATED (Part 1). Call again with start_char={start_char + length} to read more. ---\n" + footer
+            
+        return header + chunk + footer
+    except Exception as e:
+        return f"Error retrieving vault content: {e}"
 
 
 # ---------------------------------------------------------------------------
@@ -2304,4 +2379,6 @@ FAULTLINE_TOOLS = [
     list_run_folder_files,
     read_run_folder_file,
     record_decision,
+    query_api_knowledge,
+    retrieve_history_message,
 ]
