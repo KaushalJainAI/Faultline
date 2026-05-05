@@ -250,7 +250,7 @@ class CLIRenderer:
         budget_used_tokens: Optional[int] = None,
         budget_limit_tokens: Optional[int] = None,
     ) -> None:
-        title = f"Faultline | Turn {turn}/{max_turns} | findings {findings} | budget {token_pct}%"
+        title = f"Faultline | Turn {turn}/{max_turns} | findings {findings} | history {token_pct}%"
         if elapsed_str:
             title += f" | {elapsed_str}"
         sys.stdout.write(f"\033]0;{title}\007")
@@ -284,8 +284,8 @@ class CLIRenderer:
             f"\n  [dim]+- Campaign Progress --------------------------------------------+[/dim]\n"
             f"  [dim]|[/dim] Turn [bold]{turn}[/bold]/{max_turns} | Findings [bold]{findings}[/bold]{elapsed_part}\n"
             f"  [dim]|[/dim] Plan    {plan_bar} {plan_str}\n"
-            f"  [dim]|[/dim] Context {ctx_bar} {ctx_str}\n"
-            f"  [dim]|[/dim] Budget  {budget_bar} {budget_str}\n"
+            f"  [dim]|[/dim] Request {ctx_bar} {ctx_str} [dim](compacted prompt)[/dim]\n"
+            f"  [dim]|[/dim] History {budget_bar} {budget_str} [dim](stored raw)[/dim]\n"
             f"  [dim]+---------------------------------------------------------------+[/dim]"
         )
 

@@ -711,6 +711,9 @@ class AegisAgent:
         self._llm_calls_used = 0
         self._tool_calls_used = 0
         self._tracker = None
+        self._input_handler = None
+        self._last_context_tokens = 0
+        self._last_context_limit = self._budget.max_input_tokens
         self._harness = HarnessRuntime.from_tools(FAULTLINE_TOOLS, permission="workspace")
         self.workflow = StateGraph(CampaignState)
         self._build_graph()
@@ -995,8 +998,8 @@ class AegisAgent:
                     
                     if elapsed >= self._TURN_TIMEOUT_S:
                         logger.warning(f"Turn timeout reached ({self._TURN_TIMEOUT_S}s). Signalling interrupt.")
-                        if input_handler:
-                            input_handler.pause_requested.set()
+                        if self._input_handler:
+                            self._input_handler.pause_requested.set()
                         break
 
             for turn in range(1, max_turns + 1):
@@ -1229,8 +1232,8 @@ class AegisAgent:
                 
                 if elapsed >= self._TURN_TIMEOUT_S:
                     logger.warning(f"Standard turn timeout reached ({self._TURN_TIMEOUT_S}s). Signalling interrupt.")
-                    if input_handler:
-                        input_handler.pause_requested.set()
+                    if self._input_handler:
+                        self._input_handler.pause_requested.set()
                     break
 
         # Prepare messages
@@ -1266,6 +1269,8 @@ class AegisAgent:
                 max_tokens=context_limit,
                 current_turn=self._llm_calls_used,
             )
+            self._last_context_tokens = int(cm_stats.get("output_tokens_est", 0) or 0)
+            self._last_context_limit = context_limit
 
             # Provider preflight: estimate total request size including output allowance
             # and tool-schema reserve, then compact once more if still too close.
@@ -1294,6 +1299,8 @@ class AegisAgent:
                             current_turn=self._llm_calls_used,
                         )
                         context_limit = tighter_limit
+                        self._last_context_tokens = int(cm_stats.get("output_tokens_est", 0) or 0)
+                        self._last_context_limit = context_limit
 
             if cm_stats["windowing_applied"]:
                 logger.info(
@@ -1526,6 +1533,7 @@ class AegisAgent:
         from core.orchestration.input_handler import ActionType
 
         self._renderer = renderer
+        self._input_handler = input_handler
         session_headers_var.set(session_headers or {})
         chaos_vetoed_var.set(False)
 
@@ -1954,7 +1962,11 @@ class AegisAgent:
 
                         # â”€â”€ Write heartbeat to live_report.md â”€â”€â”€â”€â”€
                         campaign_budget = tracker.token_budget
-                        context_budget = self._budget.max_input_tokens
+                        context_budget = self._last_context_limit or self._budget.max_input_tokens
+                        context_tokens = self._last_context_tokens or min(
+                            tracker.total_tokens_used,
+                            context_budget,
+                        )
 
                         budget_pct = min(100, int(tracker.total_tokens_used / max(1, campaign_budget) * 100))
                         _last_tool = tracker.tools_history[-1] if tracker.tools_history else ""
@@ -1985,7 +1997,7 @@ class AegisAgent:
                                 token_pct=budget_pct,
                                 findings=tracker.findings_count,
                                 elapsed_str=elapsed_str,
-                                current_tokens=tracker.total_tokens_used,
+                                current_tokens=context_tokens,
                                 max_tokens=context_budget,
                                 budget_used_tokens=tracker.total_tokens_used,
                                 budget_limit_tokens=campaign_budget,

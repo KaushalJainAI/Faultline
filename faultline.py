@@ -458,7 +458,8 @@ async def main_async() -> int:
     budget = BudgetConfig()
     budget_str = (
         f"{budget.max_llm_calls} turns \u00b7 "
-        f"{budget.max_input_tokens:,} tokens \u00b7 "
+        f"context/call={budget.max_input_tokens:,} tokens \u00b7 "
+        f"output/call={budget.max_output_tokens:,} tokens \u00b7 "
         f"rpm={budget.max_rpm} \u00b7 "
         f"reasoning={budget.reasoning_level}"
     )

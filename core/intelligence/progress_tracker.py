@@ -314,7 +314,8 @@ class ProgressTracker:
         elapsed = time.monotonic() - self.start_time
         elapsed_str = f"{elapsed / 60:.1f}m" if elapsed > 60 else f"{elapsed:.0f}s"
 
-        # Total token budget is campaign-level and independent of model context size.
+        # Total token budget is campaign-level raw history/storage accounting,
+        # independent of the compacted per-request model context size.
         effective_budget = self.token_budget
 
         if effective_budget <= 0:
@@ -324,6 +325,19 @@ class ProgressTracker:
             tokens_pct_str = f"{tokens_pct}%"
         
         turns_remaining = max(0, self.max_turns - self.turn)
+
+        # The live report is the persisted source of truth for the operator's
+        # plan view. Fall back to it when recent assistant messages no longer
+        # contain the checklist because of compaction/windowing.
+        if run_folder:
+            try:
+                report_path = Path(run_folder) / "live_report.md"
+                if report_path.exists():
+                    report_items = parse_checklist(report_path.read_text(encoding="utf-8", errors="replace"))
+                    if report_items:
+                        self.checklist = report_items
+            except Exception:
+                pass
 
         # Checklist summary
         if self.checklist:
@@ -395,7 +409,7 @@ class ProgressTracker:
             f"Target: {self.target_url or 'Local'} ({self.target_dir})",
             f"Turn: {self.turn}/{self.max_turns} ({turns_remaining} remaining)",
             f"Elapsed: {elapsed_str}",
-            f"Token Budget: {self.total_tokens_used:,} used ({tokens_pct_str})",
+            f"Stored History Budget: {self.total_tokens_used:,} used ({tokens_pct_str})",
             f"Tool Calls: {self.tool_calls_made}",
             f"Findings Recorded: {self.findings_count}",
             f"Plan Progress: {checklist_summary}",

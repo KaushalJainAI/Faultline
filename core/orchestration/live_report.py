@@ -187,7 +187,7 @@ class LiveReport:
         line = (
             f"> **[{ts}]** Turn {turn}/{max_turns} "
             f"Â· LLM calls {llm_calls}/{max_llm_calls} "
-            f"Â· tokens {budget_str} "
+            f"Â· stored history {budget_str} "
             f"Â· findings {findings}"
             f"{last}"
         )
