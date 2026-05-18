@@ -99,8 +99,8 @@ def parse_args() -> argparse.Namespace:
                         help="Path to a credentials.toml file (overrides <target-dir>/.faultline/credentials.toml). "
                              "Use this to point at a file stored in Faultline/media/, e.g. "
                              "media/aiaas_credentials.toml")
-    parser.add_argument("--resume", default=None,
-                        help="Resume a previous run from its checkpoint file or run folder")
+    parser.add_argument("--resume", nargs="?", const="latest", default=None,
+                        help="Resume a previous run. Defaults to latest if no path is given.")
     parser.add_argument("-q", "--quiet", action="store_true",
                         help="Quiet mode: suppress agent reasoning, show only progress and findings")
     parser.add_argument("--no-open", action="store_true",
@@ -307,10 +307,17 @@ async def main_async() -> int:
     # Resume flow — load checkpoint and skip straight to agent phase
     # ------------------------------------------------------------------
     if args.resume:
-        from core.orchestration.checkpoint import load_checkpoint
+        from core.orchestration.checkpoint import load_checkpoint, find_latest_checkpoint
         from core.orchestration.input_handler import InputHandler
 
         resume_path = args.resume
+        if resume_path == "latest":
+            resume_path = find_latest_checkpoint()
+            if not resume_path:
+                console.print("[bold red]Error:[/bold red] No previous runs found to resume.")
+                return 1
+            console.print(f"[bold green]Auto-resuming latest run:[/bold green] {resume_path}")
+
         # Accept both a run folder and a direct checkpoint.json path
         if resume_path.endswith(".json"):
             import json as _json

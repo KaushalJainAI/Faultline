@@ -1,4 +1,4 @@
-﻿"""
+"""
 core/checkpoint.py
 
 Checkpoint serialization for Faultline agent campaigns.
@@ -161,4 +161,28 @@ def load_checkpoint(run_folder: str) -> Optional[Dict[str, Any]]:
     except Exception as exc:
         logger.error("Failed to load checkpoint from %s: %s", path, exc)
         return None
+
+
+def find_latest_checkpoint(reports_base: str = "reports") -> Optional[str]:
+    """
+    Scans the reports directory for the most recent folder containing a checkpoint.json.
+    Returns the path to the folder, or None if none found.
+    """
+    base_path = Path(reports_base)
+    if not base_path.exists() or not base_path.is_dir():
+        return None
+
+    valid_runs = []
+    for run_dir in base_path.iterdir():
+        if run_dir.is_dir() and (run_dir / "checkpoint.json").exists():
+            # Use modification time of the checkpoint file
+            mtime = (run_dir / "checkpoint.json").stat().st_mtime
+            valid_runs.append((mtime, str(run_dir)))
+
+    if not valid_runs:
+        return None
+
+    # Sort by mtime descending
+    valid_runs.sort(key=lambda x: x[0], reverse=True)
+    return valid_runs[0][1]
 
