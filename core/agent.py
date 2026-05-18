@@ -86,11 +86,12 @@ class ParallelToolNode(ToolNode):
 
         final: list = []
         for tool_call, result in zip(tool_calls, results):
-            if isinstance(result, asyncio.CancelledError):
-                # Operator abort / shutdown must propagate, not be downgraded
-                # to a per-tool error message (preserves HITL steering).
+            if isinstance(result, BaseException) and not isinstance(result, Exception):
+                # CancelledError / KeyboardInterrupt / SystemExit: operator
+                # abort or shutdown must propagate, not be downgraded to a
+                # per-tool error message (preserves HITL steering / clean exit).
                 raise result
-            if isinstance(result, BaseException):
+            if isinstance(result, Exception):
                 logger.error(
                     "Parallel tool '%s' raised: %s", tool_call.get("name"), result
                 )
@@ -147,12 +148,19 @@ class ParallelToolNode(ToolNode):
                 # Prefer the run_folder threaded from CampaignState; fall back
                 # to the tool args only if state did not carry one.
                 rf = run_folder or tool_call.get("args", {}).get("run_folder", "")
+                # store_and_summarize derives the on-disk ref_id from
+                # (tool_name, source_hint, turn) and ignores `counter`.
+                # Two parallel calls of the SAME tool would otherwise collide
+                # and overwrite each other in content_store/ (data loss).
+                # _make_ref_id truncates the source_hint slug to 40 chars, so
+                # the unique tool_call id must lead to survive truncation.
+                _tc_id = tool_call.get("id", "") or "noid"
                 summary, _ = store_and_summarize(
                     content,
                     tool_call["name"],
                     rf,
                     counter=999,
-                    source_hint=f"parallel_{tool_call['name']}",
+                    source_hint=f"{_tc_id}_parallel_{tool_call['name']}",
                     turn=-1
                 )
                 if hasattr(result, "content"):
