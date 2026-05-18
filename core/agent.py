@@ -86,6 +86,10 @@ class ParallelToolNode(ToolNode):
 
         final: list = []
         for tool_call, result in zip(tool_calls, results):
+            if isinstance(result, asyncio.CancelledError):
+                # Operator abort / shutdown must propagate, not be downgraded
+                # to a per-tool error message (preserves HITL steering).
+                raise result
             if isinstance(result, BaseException):
                 logger.error(
                     "Parallel tool '%s' raised: %s", tool_call.get("name"), result
