@@ -53,6 +53,10 @@ class ParallelToolNode(ToolNode):
     A ToolNode that executes multiple tool calls concurrently using asyncio.gather.
     Significantly speeds up multi-file reads and parallel security probing.
     """
+    # Cap on tool calls executed concurrently within a single LLM turn, so a
+    # large batch (e.g. 15 audits) does not flood the target or the LLM.
+    MAX_PARALLEL: int = max(1, int(os.environ.get("FAULTLINE_MAX_PARALLEL_TOOLS", "8")))
+
     def __init__(self, tools, harness: Optional[HarnessRuntime] = None):
         super().__init__(tools)
         self._harness = harness
@@ -63,24 +67,42 @@ class ParallelToolNode(ToolNode):
         if not hasattr(last_message, "tool_calls") or not last_message.tool_calls:
             return {"messages": []}
 
-        # Build list of coroutines
-        coros = []
-        for tool_call in last_message.tool_calls:
-            coros.append(self.ainvoke_tool(tool_call, config))
+        tool_calls = list(last_message.tool_calls)
+        # Thread the canonical run_folder from state so the Governor's
+        # auto-summarize can offload large parallel results correctly
+        # (tool args frequently omit run_folder).
+        run_folder = state.get("run_folder", "") or ""
+        sem = asyncio.Semaphore(self.MAX_PARALLEL)
 
-        # Run all in parallel
-        try:
-            results = await asyncio.gather(*coros)
-        except Exception as e:
-            logger.error("Parallel execution failed: %s", e)
-            # Fallback to sequential if gather totally bombs (unlikely but safe)
-            results = []
-            for tool_call in last_message.tool_calls:
-                results.append(await self.ainvoke_tool(tool_call, config))
-        
-        return {"messages": results}
+        async def _bounded(tc):
+            async with sem:
+                return await self.ainvoke_tool(tc, config, run_folder=run_folder)
 
-    async def ainvoke_tool(self, tool_call, config):
+        # return_exceptions=True so one failing tool does not cancel its
+        # independent siblings (and we never blindly re-run the whole batch).
+        results = await asyncio.gather(
+            *[_bounded(tc) for tc in tool_calls], return_exceptions=True
+        )
+
+        final: list = []
+        for tool_call, result in zip(tool_calls, results):
+            if isinstance(result, BaseException):
+                logger.error(
+                    "Parallel tool '%s' raised: %s", tool_call.get("name"), result
+                )
+                final.append(
+                    ToolMessage(
+                        content=f"Error executing tool '{tool_call['name']}': {result}",
+                        tool_call_id=tool_call["id"],
+                        status="error",
+                    )
+                )
+            else:
+                final.append(result)
+
+        return {"messages": final}
+
+    async def ainvoke_tool(self, tool_call, config, run_folder: str = ""):
         try:
             tool_name = tool_call["name"]
             tool_args = tool_call.get("args", {}) or {}
@@ -118,13 +140,13 @@ class ParallelToolNode(ToolNode):
             from core.intelligence.content_manager import estimate_tokens, store_and_summarize
             if estimate_tokens(content) > 50000:
                 logger.info(f"Parallel tool '{tool_call['name']}' result too large. Auto-summarizing.")
-                # We need the run_folder from state, but for now we use an empty string
-                # or try to extract it from the tool arguments if available.
-                run_folder = tool_call.get("args", {}).get("run_folder", "")
+                # Prefer the run_folder threaded from CampaignState; fall back
+                # to the tool args only if state did not carry one.
+                rf = run_folder or tool_call.get("args", {}).get("run_folder", "")
                 summary, _ = store_and_summarize(
-                    content, 
-                    tool_call["name"], 
-                    run_folder, 
+                    content,
+                    tool_call["name"],
+                    rf,
                     counter=999,
                     source_hint=f"parallel_{tool_call['name']}",
                     turn=-1
@@ -391,6 +413,23 @@ class BudgetConfig:
     context_ratio: float = float(os.environ.get("FAULTLINE_CONTEXT_RATIO", "0.8"))
 
     def __post_init__(self):
+        # Provider-aware LLM-call default. Codex reaches conclusions in far
+        # fewer turns (and runs on a ChatGPT subscription quota, not metered
+        # API tokens), so default it to 40 instead of 120. An explicit
+        # FAULTLINE_MAX_LLM_CALLS / FAULTLINE_MAX_TURNS always wins.
+        _explicit_calls = (
+            "FAULTLINE_MAX_LLM_CALLS" in os.environ
+            or "FAULTLINE_MAX_TURNS" in os.environ
+        )
+        if not _explicit_calls:
+            try:
+                if get_cli_provider_name() == "codex":
+                    self.max_llm_calls = int(
+                        os.environ.get("FAULTLINE_CODEX_MAX_LLM_CALLS", "40")
+                    )
+            except Exception:
+                pass
+
         if self.reasoning_level not in REASONING_PROFILES:
             self.reasoning_level = "normal"
         profile_tokens = REASONING_PROFILES[self.reasoning_level]["max_output_tokens"]
@@ -833,7 +872,9 @@ class AegisAgent:
         return iteration, findings_count
 
     def _init_progress_tracker(self, agent_start: float, iteration: int) -> ProgressTracker:
-        max_turns = int(os.environ.get("FAULTLINE_MAX_TURNS") or os.environ.get("FAULTLINE_MAX_LLM_CALLS") or "40")
+        # Single source of truth: the already-resolved budget (which is
+        # provider-aware, e.g. 40 for Codex, 120 otherwise).
+        max_turns = self._budget.max_llm_calls
         raw_budget = int(os.environ.get("FAULTLINE_TOKEN_BUDGET", str(self._TOKEN_BUDGET_DEFAULT)))
         token_budget = max(1_000_000, min(raw_budget, self._TOKEN_BUDGET_HARD_CAP))
         self._tracker = ProgressTracker(

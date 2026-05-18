@@ -85,7 +85,11 @@ Faultline is an AI-assisted QA and chaos engineering platform. It follows a **7-
 
 ### Budget and phase system
 
-`BudgetConfig` (in `core/agent.py`) controls LLM call caps, tool call caps, output token limits, and reasoning profiles (`fast`/`normal`/`deep`). `ProgressTracker` enforces per-phase caps (`PHASE_CAPS`) across four phases: `discovery → test → chaos → report`. Phase advancement is inferred from tool names via `_PHASE_SIGNALS`.
+`BudgetConfig` (in `core/agent.py`) controls LLM call caps, tool call caps, output token limits, and reasoning profiles (`fast`/`normal`/`deep`). `BudgetConfig.__post_init__` is **provider-aware**: when the resolved provider is Codex, `max_llm_calls` defaults to `40` instead of `120` (an explicit `FAULTLINE_MAX_LLM_CALLS`/`FAULTLINE_MAX_TURNS` always wins). `ProgressTracker` enforces per-phase caps (`PHASE_CAPS`) across four phases: `discovery → test → chaos → report`. Phase advancement is inferred from tool names via `_PHASE_SIGNALS`.
+
+### Parallel tool execution
+
+`ParallelToolNode` (in `core/agent.py`) runs all tool calls emitted in a single LLM response concurrently. One LLM turn that emits N independent tool calls therefore executes N tasks in parallel for the cost of **one** LLM call — the system prompt mandates this batching. Concurrency is bounded by a semaphore (`FAULTLINE_MAX_PARALLEL_TOOLS`, default 8). `asyncio.gather` uses `return_exceptions=True` so a single failing tool does not cancel its independent siblings; only the failed call surfaces an error `ToolMessage`. Oversized parallel results (>50k est. tokens) are auto-offloaded to `content_store/` via the Governor, using the `run_folder` threaded from `CampaignState`.
 
 ### Run folder layout
 
@@ -120,7 +124,10 @@ Tool docstrings are critical — the LLM uses them to decide when to call a tool
 |----------|---------|---------|
 | `FAULTLINE_PROVIDER` | `openrouter` | LLM backend: `openrouter`, `openai`, `anthropic`, `google`, `claude_cli`, `gemini_cli`, `codex_cli` |
 | `OPENROUTER_API_KEY` | — | Required for default provider |
-| `FAULTLINE_MAX_LLM_CALLS` | `120` | Hard cap on agent LLM turns |
+| `FAULTLINE_MAX_LLM_CALLS` | `120` (`40` for codex) | Hard cap on agent LLM turns. Provider-aware: auto-defaults to `40` when provider resolves to Codex. Explicit value overrides all defaults. |
+| `FAULTLINE_CODEX_MAX_LLM_CALLS` | `40` | Codex-only LLM-call default (used only when `FAULTLINE_MAX_LLM_CALLS`/`FAULTLINE_MAX_TURNS` are unset and provider is codex) |
+| `FAULTLINE_MAX_PARALLEL_TOOLS` | `8` | Max independent tool calls run concurrently within a single LLM turn (`ParallelToolNode` semaphore) |
+| `FAULTLINE_CODEX_SANDBOX` | `read-only` | Codex CLI sandbox mode |
 | `FAULTLINE_MAX_OUTPUT_TOKENS` | profile default | Output tokens per LLM call |
 | `FAULTLINE_CONTEXT_RATIO` | `0.8` | Fraction of model context window used for input |
 | `FAULTLINE_MAX_RPM` | `36` | Requests per minute rate limit |
