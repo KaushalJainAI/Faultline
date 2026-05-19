@@ -903,7 +903,14 @@ class AegisAgent:
         if not resumed_messages:
             return iteration, findings_count
 
-        iteration = resumed_turn or self._sync_state_from_history(accumulated_messages)
+        # Always sync the LLM/tool call counters from restored history,
+        # even when resumed_turn is provided. Previously this was
+        # `resumed_turn or _sync_state_from_history(...)`, so a truthy
+        # resumed_turn short-circuited the sync and left _llm_calls_used at
+        # 0 — the resumed run then thought it had a full fresh budget and
+        # the displayed counter reset (e.g. "LLM 1/200" after 40 calls).
+        synced_turn = self._sync_state_from_history(accumulated_messages)
+        iteration = resumed_turn or synced_turn
         if resumed_findings > 0:
             return iteration, resumed_findings
 

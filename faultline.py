@@ -385,6 +385,23 @@ async def main_async() -> int:
                     "Resume the campaign now."
                 )
 
+        # Apply budget / reasoning CLI overrides on the resume path too.
+        # The normal flow maps these into os.environ further below, but the
+        # resume branch returns before reaching it — without this, flags like
+        # --max-llm-calls are silently ignored when resuming.
+        if args.reasoning_level:
+            os.environ["FAULTLINE_REASONING_LEVEL"] = args.reasoning_level
+        if args.max_llm_calls is not None:
+            os.environ["FAULTLINE_MAX_LLM_CALLS"] = str(args.max_llm_calls)
+        if args.max_tool_calls is not None:
+            os.environ["FAULTLINE_MAX_TOOL_CALLS"] = str(args.max_tool_calls)
+        if args.max_input_tokens is not None:
+            os.environ["FAULTLINE_MAX_INPUT_TOKENS"] = str(args.max_input_tokens)
+        if args.max_output_tokens is not None:
+            os.environ["FAULTLINE_MAX_OUTPUT_TOKENS"] = str(args.max_output_tokens)
+        if args.max_rpm is not None:
+            os.environ["FAULTLINE_MAX_RPM"] = str(args.max_rpm)
+
         try:
             await run_agent(
                 args, renderer, run_folder,
