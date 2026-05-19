@@ -425,6 +425,37 @@ class BudgetConfig:
     context_ratio: float = float(os.environ.get("FAULTLINE_CONTEXT_RATIO", "0.8"))
 
     def __post_init__(self):
+        # Re-resolve env-backed knobs at INSTANTIATION time. The dataclass
+        # field defaults above are evaluated once at class-definition (import)
+        # time, which is before faultline.py maps CLI flags
+        # (--max-llm-calls etc.) into os.environ. Without this, late env /
+        # CLI overrides are silently ignored. Every BudgetConfig() in this
+        # codebase is constructed with no args, so env is the source of truth.
+        def _env_int(current: int, *keys: str) -> int:
+            for k in keys:
+                v = os.environ.get(k)
+                if v not in (None, ""):
+                    try:
+                        return int(v)
+                    except ValueError:
+                        pass
+            return current
+
+        self.max_llm_calls = _env_int(
+            self.max_llm_calls, "FAULTLINE_MAX_LLM_CALLS", "FAULTLINE_MAX_TURNS"
+        )
+        self.max_tool_calls = _env_int(self.max_tool_calls, "FAULTLINE_MAX_TOOL_CALLS")
+        self.max_input_tokens = _env_int(
+            self.max_input_tokens, "FAULTLINE_MAX_INPUT_TOKENS", "FAULTLINE_MAX_TOKENS"
+        )
+        self.max_output_tokens = _env_int(
+            self.max_output_tokens, "FAULTLINE_MAX_OUTPUT_TOKENS"
+        )
+        self.max_rpm = _env_int(self.max_rpm, "FAULTLINE_MAX_RPM")
+        self.reasoning_level = (
+            os.environ.get("FAULTLINE_REASONING_LEVEL") or self.reasoning_level
+        )
+
         # Provider-aware LLM-call default. Codex reaches conclusions in far
         # fewer turns (and runs on a ChatGPT subscription quota, not metered
         # API tokens), so default it to 40 instead of 120. An explicit

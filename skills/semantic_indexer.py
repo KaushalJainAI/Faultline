@@ -18,7 +18,11 @@ try:
             category=DeprecationWarning,
         )
         import faiss
-except ImportError:
+except Exception:
+    # faiss is an optional heavy dep. A missing package raises ImportError,
+    # but a binary built against a different NumPy ABI raises AttributeError
+    # ("_ARRAY_API not found"). Either way, degrade gracefully to no
+    # semantic indexing instead of crashing the whole application.
     faiss = None
 
 import hashlib
